@@ -50,7 +50,8 @@ int main(int argc, char *argv[])
 				break;
 			}
 			default:
-				break;
+				printf("Unknown op: %d\n", op);
+				return 100;
 		}
 	}
 
