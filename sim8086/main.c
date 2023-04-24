@@ -26,7 +26,7 @@ int main(int argc, char *argv[])
 
 	int b;
 	int op;
-	while (1) {
+	while (b != EOF) {
 		b = fgetc(fp); if (b == EOF) { break; }
 
 		op = b >> 2;
@@ -34,8 +34,7 @@ int main(int argc, char *argv[])
 		switch(op) {
 			case MOV:
 			{
-				int nb = fgetc(fp);
-				if (nb == EOF) { break; }
+				int nb = fgetc(fp); if (nb == EOF) { break; }
 
 				int d = (b >> 1) & 1;
 				int w = b & 1;
