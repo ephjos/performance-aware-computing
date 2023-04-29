@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# TODO: only proceed if successful
+gcc main.c && ./a.out $1 > "temp.asm"
+nasm "temp.asm"
+cmp -l $1 "temp"
