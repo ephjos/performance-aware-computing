@@ -27,6 +27,8 @@
 struct sim_state_t {
 	FILE *fp; // Open file, where bytes are read from
 	uint8_t op_byte;
+	uint32_t labels[1<<15];
+	uint32_t labels_len;
 };
 struct op_t {
 	uint8_t opcode_len;
@@ -81,7 +83,7 @@ int16_t read_word(struct sim_state_t *state) {
 // ============================================================================
 // Instruction handlers
 // ============================================================================
-void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
+void core_rm2rm(const char* op_name, struct sim_state_t *state, struct op_t *op) {
 	uint8_t options_byte = read_byte(state);
 
 	uint8_t d = (state->op_byte >> 1) & 1;
@@ -94,18 +96,18 @@ void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
 	switch (mod) {
 		case REGISTER_MODE:
 			if (d) {
-				printf("mov %s, %s\n", REGISTER_MODE_TABLE[w][reg], REGISTER_MODE_TABLE[w][rm]);
+				printf("%s %s, %s\n", op_name, REGISTER_MODE_TABLE[w][reg], REGISTER_MODE_TABLE[w][rm]);
 			} else {
-				printf("mov %s, %s\n", REGISTER_MODE_TABLE[w][rm], REGISTER_MODE_TABLE[w][reg]);
+				printf("%s %s, %s\n", op_name, REGISTER_MODE_TABLE[w][rm], REGISTER_MODE_TABLE[w][reg]);
 			}
 			break;
 		case MEMORY_MODE_16:
 			{
 				int16_t displacement = read_word(state);
 				if (d) {
-					printf("mov %s, [%s + %d]\n", REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
+					printf("%s %s, [%s + %d]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
 				} else {
-					printf("mov [%s + %d], %s\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
+					printf("%s [%s + %d], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
 				}
 				break;
 			}
@@ -113,9 +115,9 @@ void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
 			{
 				int8_t displacement = read_byte(state);
 				if (d) {
-					printf("mov %s, [%s + %d]\n", REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
+					printf("%s %s, [%s + %d]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
 				} else {
-					printf("mov [%s + %d], %s\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
+					printf("%s [%s + %d], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
 				}
 				break;
 			}
@@ -124,22 +126,88 @@ void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
 				// Direct address, 16-bit
 				int16_t displacement = read_word(state);
 				if (d) {
-					printf("mov %s, [%d]\n", REGISTER_MODE_TABLE[w][reg], displacement);
+					printf("%s %s, [%d]\n", op_name, REGISTER_MODE_TABLE[w][reg], displacement);
 				} else {
-					printf("mov [%d], %s\n", displacement, REGISTER_MODE_TABLE[w][reg]);
+					printf("%s [%d], %s\n", op_name, displacement, REGISTER_MODE_TABLE[w][reg]);
 				}
 			} else {
 				// Normal memory mode, no displacement
 				if (d) {
-					printf("mov %s, [%s]\n", REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm]);
+					printf("%s %s, [%s]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm]);
 				} else {
-					printf("mov [%s], %s\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], REGISTER_MODE_TABLE[w][reg]);
+					printf("%s [%s], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], REGISTER_MODE_TABLE[w][reg]);
 				}
 			}
 			break;
 		default:
 			break;
 	}
+}
+
+void core_i2rm(char *op_name, struct sim_state_t *state, struct op_t *op, uint8_t s, uint8_t w, uint8_t mod, uint8_t rm) {
+
+	switch (mod) {
+		case REGISTER_MODE:
+			if (!s && w) {
+				int16_t data = read_word(state);
+				printf("%s %s, word %d\n", op_name, REGISTER_MODE_TABLE[w][rm], data);
+			} else {
+				int8_t data = read_byte(state);
+				printf("%s %s, byte %d\n", op_name, REGISTER_MODE_TABLE[w][rm], data);
+			}
+			break;
+		case MEMORY_MODE_16:
+			{
+				int16_t displacement = read_word(state);
+				if (!s && w) {
+					int16_t data = read_word(state);
+					printf("%s [%s + %d], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
+				} else {
+					int8_t data = read_byte(state);
+					printf("%s [%s + %d], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
+				}
+				break;
+			}
+		case MEMORY_MODE_8:
+			{
+				int8_t displacement = read_byte(state);
+				if (!s && w) {
+					int16_t data = read_word(state);
+					printf("%s [%s + %d], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
+				} else {
+					int8_t data = read_byte(state);
+					printf("%s [%s + %d], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
+				}
+				break;
+			}
+			break;
+		case MEMORY_MODE_0:
+			if (rm == 6) {
+				int16_t displacement = read_word(state);
+				if (!s && w) {
+					int16_t data = read_word(state);
+					printf("%s [%d], word %d\n", op_name, displacement, data);
+				} else {
+					int8_t data = read_byte(state);
+					printf("%s [%d], byte %d\n", op_name, displacement, data);
+				}
+			} else {
+				if (!s && w) {
+					int16_t data = read_word(state);
+					printf("%s [%s], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
+				} else {
+					int8_t data = read_byte(state);
+					printf("%s [%s], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
+				}
+				break;
+			}
+		default:
+			break;
+	}
+}
+
+void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
+	core_rm2rm("mov", state, op);
 }
 
 void mov_i2rm(struct sim_state_t *state, struct op_t *op) {
@@ -149,64 +217,7 @@ void mov_i2rm(struct sim_state_t *state, struct op_t *op) {
 	uint8_t mod = (options_byte>> 6) & 3;
 	uint8_t rm = options_byte & 7;
 
-	switch (mod) {
-		case REGISTER_MODE:
-			if (w) {
-				int16_t data = read_word(state);
-				printf("mov %s, word %d\n", REGISTER_MODE_TABLE[w][rm], data);
-			} else {
-				int8_t data = read_byte(state);
-				printf("mov %s, byte %d\n", REGISTER_MODE_TABLE[w][rm], data);
-			}
-			break;
-		case MEMORY_MODE_16:
-			{
-				int16_t displacement = read_word(state);
-				if (w) {
-					int16_t data = read_word(state);
-					printf("mov [%s + %d], word %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("mov [%s + %d], byte %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				}
-				break;
-			}
-		case MEMORY_MODE_8:
-			{
-				int8_t displacement = read_byte(state);
-				if (w) {
-					int16_t data = read_word(state);
-					printf("mov [%s + %d], word %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("mov [%s + %d], byte %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				}
-				break;
-			}
-			break;
-		case MEMORY_MODE_0:
-			if (rm == 6) {
-				int16_t displacement = read_word(state);
-				if (w) {
-					int16_t data = read_word(state);
-					printf("mov [%d], word %d\n", displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("mov [%d], byte %d\n", displacement, data);
-				}
-			} else {
-				if (w) {
-					int16_t data = read_word(state);
-					printf("mov [%s], word %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("mov [%s], byte %d\n", EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
-				}
-				break;
-			}
-		default:
-			break;
-	}
+	core_i2rm("mov", state, op, 0, w, mod, rm);
 }
 
 void mov_i2r(struct sim_state_t *state, struct op_t *op) {
@@ -244,6 +255,143 @@ void mov_a2m(struct sim_state_t *state, struct op_t *op) {
 	}
 }
 
+void shared_i2rm(struct sim_state_t *state, struct op_t *op) {
+	uint8_t s = (state->op_byte >> 1) & 1;
+	uint8_t w = state->op_byte & 1;
+
+	uint8_t options_byte = read_byte(state);
+	uint8_t mod = (options_byte >> 6) & 3;
+	uint8_t local_op = (options_byte >> 3) & 7;
+	uint8_t rm = options_byte & 7;
+
+	switch (local_op) {
+		case 0:
+			core_i2rm("add", state, op, s, w, mod, rm);
+			break;
+		case 5:
+			core_i2rm("sub", state, op, s, w, mod, rm);
+			break;
+		case 7:
+			core_i2rm("cmp", state, op, s, w, mod, rm);
+			break;
+	}
+}
+
+void core_i2a(char *op_name, struct sim_state_t *state, struct op_t *op) {
+	uint8_t w = state->op_byte & 1;
+	if (w) {
+		int16_t data = read_word(state);
+		printf("%s ax, %d \n", op_name, data);
+	} else {
+		int8_t data = read_byte(state);
+		printf("%s al, %d \n", op_name, data);
+	}
+}
+
+void add_rm2rm(struct sim_state_t *state, struct op_t *op) {
+	core_rm2rm("add", state, op);
+}
+
+void add_i2a(struct sim_state_t *state, struct op_t *op) {
+	core_i2a("add", state, op);
+}
+
+void sub_rm2rm(struct sim_state_t *state, struct op_t *op) {
+	core_rm2rm("sub", state, op);
+}
+
+void sub_i2a(struct sim_state_t *state, struct op_t *op) {
+	core_i2a("sub", state, op);
+}
+
+void cmp_rm2rm(struct sim_state_t *state, struct op_t *op) {
+	core_rm2rm("cmp", state, op);
+}
+
+void cmp_i2a(struct sim_state_t *state, struct op_t *op) {
+	core_i2a("cmp", state, op);
+}
+
+void je(struct sim_state_t *state, struct op_t *op) {
+	printf("je %d\n", (int8_t)read_byte(state));
+}
+
+void jl(struct sim_state_t *state, struct op_t *op) {
+	printf("jl %d\n", (int8_t)read_byte(state));
+}
+
+void jle(struct sim_state_t *state, struct op_t *op) {
+	printf("jle %d\n", (int8_t)read_byte(state));
+}
+
+void jb(struct sim_state_t *state, struct op_t *op) {
+	printf("jb %d\n", (int8_t)read_byte(state));
+}
+
+void jbe(struct sim_state_t *state, struct op_t *op) {
+	printf("jbe %d\n", (int8_t)read_byte(state));
+}
+
+void jp(struct sim_state_t *state, struct op_t *op) {
+	printf("jp %d\n", (int8_t)read_byte(state));
+}
+
+void jo(struct sim_state_t *state, struct op_t *op) {
+	printf("jo %d\n", (int8_t)read_byte(state));
+}
+
+void js(struct sim_state_t *state, struct op_t *op) {
+	printf("js %d\n", (int8_t)read_byte(state));
+}
+
+void jnz(struct sim_state_t *state, struct op_t *op) {
+	printf("jnz %d\n", (int8_t)read_byte(state));
+}
+
+void jnl(struct sim_state_t *state, struct op_t *op) {
+	printf("jnl %d\n", (int8_t)read_byte(state));
+}
+
+void jnle(struct sim_state_t *state, struct op_t *op) {
+	printf("jnle %d\n", (int8_t)read_byte(state));
+}
+
+void jnb(struct sim_state_t *state, struct op_t *op) {
+	printf("jnb %d\n", (int8_t)read_byte(state));
+}
+
+void jnbe(struct sim_state_t *state, struct op_t *op) {
+	printf("jnbe %d\n", (int8_t)read_byte(state));
+}
+
+void jnp(struct sim_state_t *state, struct op_t *op) {
+	printf("jnp %d\n", (int8_t)read_byte(state));
+}
+
+void jno(struct sim_state_t *state, struct op_t *op) {
+	printf("jno %d\n", (int8_t)read_byte(state));
+}
+
+void jns(struct sim_state_t *state, struct op_t *op) {
+	printf("jns %d\n", (int8_t)read_byte(state));
+}
+
+void loop(struct sim_state_t *state, struct op_t *op) {
+	printf("loop %d\n", (int8_t)read_byte(state));
+}
+
+void loopz(struct sim_state_t *state, struct op_t *op) {
+	printf("loopz %d\n", (int8_t)read_byte(state));
+}
+
+void loopnz(struct sim_state_t *state, struct op_t *op) {
+	printf("loopnz %d\n", (int8_t)read_byte(state));
+}
+
+void jcxz(struct sim_state_t *state, struct op_t *op) {
+	printf("jcxz %d\n", (int8_t)read_byte(state));
+}
+
 
 // ============================================================================
 // Entrypoint
@@ -256,6 +404,33 @@ int main(int argc, char *argv[]) {
 		(struct op_t) { .opcode_len = 4,  .opcode = 11,  .impl = mov_i2r           },
 		(struct op_t) { .opcode_len = 7,  .opcode = 80,  .impl = mov_m2a           },
 		(struct op_t) { .opcode_len = 7,  .opcode = 81,  .impl = mov_a2m           },
+		(struct op_t) { .opcode_len = 6,  .opcode = 32,  .impl = shared_i2rm       },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0,   .impl = add_rm2rm         },
+		(struct op_t) { .opcode_len = 7,  .opcode = 2,   .impl = add_i2a           },
+		(struct op_t) { .opcode_len = 6,  .opcode = 10,  .impl = sub_rm2rm         },
+		(struct op_t) { .opcode_len = 7,  .opcode = 22,  .impl = sub_i2a           },
+		(struct op_t) { .opcode_len = 6,  .opcode = 14,  .impl = cmp_rm2rm         },
+		(struct op_t) { .opcode_len = 7,  .opcode = 30,  .impl = cmp_i2a           },
+		(struct op_t) { .opcode_len = 8,  .opcode = 116,   .impl = je              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 124,   .impl = jl              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 126,   .impl = jle             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 114,   .impl = jb              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 118,   .impl = jbe             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 122,   .impl = jp              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 112,   .impl = jo              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 120,   .impl = js              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 117,   .impl = jnz             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 125,   .impl = jnl             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 127,   .impl = jnle            },
+		(struct op_t) { .opcode_len = 8,  .opcode = 115,   .impl = jnb             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 119,   .impl = jnbe            },
+		(struct op_t) { .opcode_len = 8,  .opcode = 123,   .impl = jnp             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 113,   .impl = jno             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 121,   .impl = jns             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 226,   .impl = loop            },
+		(struct op_t) { .opcode_len = 8,  .opcode = 225,   .impl = loopz           },
+		(struct op_t) { .opcode_len = 8,  .opcode = 224,   .impl = loopnz          },
+		(struct op_t) { .opcode_len = 8,  .opcode = 227,   .impl = jcxz            },
 	};
 	const int NUM_OPS = sizeof(OPS)/sizeof(struct op_t);
 
