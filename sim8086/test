@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# TODO: only proceed if successful
-gcc main.c && ./a.out $1 > "temp.asm"
-nasm "temp.asm"
-cmp -l $1 "temp"
+set -uo pipefail
+
+make > /dev/null && ./sim8086 $1 > "temp.asm"
+nasm "temp.asm" || { echo "[FAIL] $1" && exit 1; }
+cmp -l $1 "temp" && echo "[PASS] $1" || echo "[FAIL] $1"

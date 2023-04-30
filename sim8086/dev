@@ -1,3 +1,5 @@
 #!/bin/bash
 
-gcc main.c && ./a.out $1
+set -euo pipefail
+
+make && ./sim8086 $1

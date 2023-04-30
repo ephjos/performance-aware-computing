@@ -1,0 +1,4 @@
+#!/bin/bash
+
+find listings/ -type f \! -name "*.asm" -exec ./test {} \;
+
