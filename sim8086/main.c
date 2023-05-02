@@ -145,62 +145,39 @@ void core_rm2rm(const char* op_name, struct sim_state_t *state, struct op_t *op)
 }
 
 void core_i2rm(char *op_name, struct sim_state_t *state, struct op_t *op, uint8_t s, uint8_t w, uint8_t mod, uint8_t rm) {
+	int16_t data_disp = read_byte(state);
+	char *prefix = "byte";
+
+	if (!s && w) {
+		data_disp = (uint16_t)(read_byte(state) << 8) | data_disp;
+		prefix = "word";
+	}
 
 	switch (mod) {
 		case REGISTER_MODE:
-			if (!s && w) {
-				int16_t data = read_word(state);
-				printf("%s %s, word %d\n", op_name, REGISTER_MODE_TABLE[w][rm], data);
-			} else {
-				int8_t data = read_byte(state);
-				printf("%s %s, byte %d\n", op_name, REGISTER_MODE_TABLE[w][rm], data);
-			}
+			printf("%s %s, %s %d\n", op_name, REGISTER_MODE_TABLE[w][rm], prefix, data_disp);
 			break;
 		case MEMORY_MODE_16:
 			{
-				int16_t displacement = read_word(state);
-				if (!s && w) {
-					int16_t data = read_word(state);
-					printf("%s [%s + %d], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("%s [%s + %d], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				}
+				int16_t data = read_word(state);
+				printf("%s [%s + %d], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data_disp, prefix, data);
 				break;
 			}
 		case MEMORY_MODE_8:
 			{
-				int8_t displacement = read_byte(state);
-				if (!s && w) {
-					int16_t data = read_word(state);
-					printf("%s [%s + %d], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("%s [%s + %d], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, data);
-				}
+				int8_t data = read_byte(state);
+				printf("%s [%s + %d], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data_disp, prefix, data);
 				break;
 			}
 			break;
 		case MEMORY_MODE_0:
 			if (rm == 6) {
-				int16_t displacement = read_word(state);
-				if (!s && w) {
-					int16_t data = read_word(state);
-					printf("%s [%d], word %d\n", op_name, displacement, data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("%s [%d], byte %d\n", op_name, displacement, data);
-				}
+				int16_t data = read_word(state);
+				printf("%s [%d], %s %d\n", op_name, data_disp, prefix, data);
 			} else {
-				if (!s && w) {
-					int16_t data = read_word(state);
-					printf("%s [%s], word %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
-				} else {
-					int8_t data = read_byte(state);
-					printf("%s [%s], byte %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data);
-				}
-				break;
+				printf("%s [%s], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], prefix, data_disp);
 			}
+			break;
 		default:
 			break;
 	}
@@ -223,36 +200,39 @@ void mov_i2rm(struct sim_state_t *state, struct op_t *op) {
 void mov_i2r(struct sim_state_t *state, struct op_t *op) {
 	uint8_t w = (state->op_byte >> 3) & 1;
 	uint8_t reg = (state->op_byte) & 7;
+	int16_t data = read_byte(state);
+	char *prefix = "byte";
 
 	if (w) {
-		int16_t data = read_word(state);
-		printf("mov %s, word %d \n", REGISTER_MODE_TABLE[w][reg], data);
-	} else {
-		int8_t data = read_byte(state);
-		printf("mov %s, byte %d \n", REGISTER_MODE_TABLE[w][reg], data);
+		data = (uint16_t)(read_byte(state) << 8) | data;
+		prefix = "word";
 	}
+
+	printf("mov %s, %s %d \n", REGISTER_MODE_TABLE[w][reg], prefix, data);
 }
 
 void mov_m2a(struct sim_state_t *state, struct op_t *op) {
 	uint8_t w = state->op_byte & 1;
 	uint16_t addr = read_word(state);
+	char reg_suffix = 'l';
 
 	if (w) {
-		printf("mov ax, [%d]\n", addr);
-	} else {
-		printf("mov al, [%d]\n", addr);
+		reg_suffix = 'x';
 	}
+
+	printf("mov a%c, [%d]\n", reg_suffix, addr);
 }
 
 void mov_a2m(struct sim_state_t *state, struct op_t *op) {
 	uint8_t w = state->op_byte & 1;
 	uint16_t addr = read_word(state);
+	char reg_suffix = 'l';
 
 	if (w) {
-		printf("mov [%d], ax\n", addr);
-	} else {
-		printf("mov [%d], al\n", addr);
+		reg_suffix = 'x';
 	}
+
+	printf("mov [%d], a%c\n", addr, reg_suffix);
 }
 
 void shared_i2rm(struct sim_state_t *state, struct op_t *op) {
@@ -279,13 +259,15 @@ void shared_i2rm(struct sim_state_t *state, struct op_t *op) {
 
 void core_i2a(char *op_name, struct sim_state_t *state, struct op_t *op) {
 	uint8_t w = state->op_byte & 1;
+	uint16_t data = read_byte(state);
+	char reg_suffix = 'l';
+
 	if (w) {
-		int16_t data = read_word(state);
-		printf("%s ax, %d \n", op_name, data);
-	} else {
-		int8_t data = read_byte(state);
-		printf("%s al, %d \n", op_name, data);
+		data = (uint16_t)(read_byte(state) << 8) | data;
+		reg_suffix = 'x';
 	}
+
+	printf("%s a%c, %d \n", op_name, reg_suffix, data);
 }
 
 void add_rm2rm(struct sim_state_t *state, struct op_t *op) {
@@ -399,39 +381,40 @@ void jcxz(struct sim_state_t *state, struct op_t *op) {
 int main(int argc, char *argv[]) {
 	// Main-scoped constants
 	const struct op_t OPS[] = {
-		(struct op_t) { .opcode_len = 6,  .opcode = 34,  .impl = mov_rm2rm         },
-		(struct op_t) { .opcode_len = 7,  .opcode = 99,  .impl = mov_i2rm          },
-		(struct op_t) { .opcode_len = 4,  .opcode = 11,  .impl = mov_i2r           },
-		(struct op_t) { .opcode_len = 7,  .opcode = 80,  .impl = mov_m2a           },
-		(struct op_t) { .opcode_len = 7,  .opcode = 81,  .impl = mov_a2m           },
-		(struct op_t) { .opcode_len = 6,  .opcode = 32,  .impl = shared_i2rm       },
-		(struct op_t) { .opcode_len = 6,  .opcode = 0,   .impl = add_rm2rm         },
-		(struct op_t) { .opcode_len = 7,  .opcode = 2,   .impl = add_i2a           },
-		(struct op_t) { .opcode_len = 6,  .opcode = 10,  .impl = sub_rm2rm         },
-		(struct op_t) { .opcode_len = 7,  .opcode = 22,  .impl = sub_i2a           },
-		(struct op_t) { .opcode_len = 6,  .opcode = 14,  .impl = cmp_rm2rm         },
-		(struct op_t) { .opcode_len = 7,  .opcode = 30,  .impl = cmp_i2a           },
-		(struct op_t) { .opcode_len = 8,  .opcode = 116,   .impl = je              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 124,   .impl = jl              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 126,   .impl = jle             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 114,   .impl = jb              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 118,   .impl = jbe             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 122,   .impl = jp              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 112,   .impl = jo              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 120,   .impl = js              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 117,   .impl = jnz             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 125,   .impl = jnl             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 127,   .impl = jnle            },
-		(struct op_t) { .opcode_len = 8,  .opcode = 115,   .impl = jnb             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 119,   .impl = jnbe            },
-		(struct op_t) { .opcode_len = 8,  .opcode = 123,   .impl = jnp             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 113,   .impl = jno             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 121,   .impl = jns             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 226,   .impl = loop            },
-		(struct op_t) { .opcode_len = 8,  .opcode = 225,   .impl = loopz           },
-		(struct op_t) { .opcode_len = 8,  .opcode = 224,   .impl = loopnz          },
-		(struct op_t) { .opcode_len = 8,  .opcode = 227,   .impl = jcxz            },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0b00100010,   .impl = mov_rm2rm          },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b01100011,   .impl = mov_i2rm           },
+		(struct op_t) { .opcode_len = 4,  .opcode = 0b00001011,   .impl = mov_i2r            },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b01010000,   .impl = mov_m2a            },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b01010001,   .impl = mov_a2m            },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0b00100000,   .impl = shared_i2rm        },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0b00000000,   .impl = add_rm2rm          },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b00000010,   .impl = add_i2a            },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0b00001010,   .impl = sub_rm2rm          },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b00010110,   .impl = sub_i2a            },
+		(struct op_t) { .opcode_len = 6,  .opcode = 0b00001110,   .impl = cmp_rm2rm          },
+		(struct op_t) { .opcode_len = 7,  .opcode = 0b00011110,   .impl = cmp_i2a            },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110100,   .impl = je                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111100,   .impl = jl                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111110,   .impl = jle                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110010,   .impl = jb                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110110,   .impl = jbe                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111010,   .impl = jp                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110000,   .impl = jo                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111000,   .impl = js                 },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110101,   .impl = jnz                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111101,   .impl = jnl                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111111,   .impl = jnle               },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110011,   .impl = jnb                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110111,   .impl = jnbe               },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111011,   .impl = jnp                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110001,   .impl = jno                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111001,   .impl = jns                },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100010,   .impl = loop               },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100001,   .impl = loopz              },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100000,   .impl = loopnz             },
+		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100011,   .impl = jcxz               },
 	};
+
 	const int NUM_OPS = sizeof(OPS)/sizeof(struct op_t);
 
 	// "Parse" args
