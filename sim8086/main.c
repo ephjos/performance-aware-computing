@@ -12,450 +12,514 @@
 #include <stdlib.h>
 
 // ============================================================================
-// Defines
+// Macros
 // ============================================================================
 
-#define REGISTER_MODE 3
-#define MEMORY_MODE_16 2
-#define MEMORY_MODE_8 1
-#define MEMORY_MODE_0 0
+#define MAX_OPERANDS 5
+#define MAX_BLOCKS 16
+#define INITIAL_CAP 512
 
 // ============================================================================
-// Structs/Types
+// Encodings macros + table
 // ============================================================================
 
-struct sim_state_t {
-	FILE *fp; // Open file, where bytes are read from
-	uint8_t op_byte;
-	uint32_t labels[1<<15];
-	uint32_t labels_len;
+#define LITERAL(b) {bits_literal, sizeof(#b) - 1, 0b##b}
+#define END {bits_end, 0, 0}
+#define D {bits_d, 1, 0}
+#define W {bits_w, 1, 0}
+#define MOD {bits_mod, 2, 0}
+#define REG {bits_reg, 3, 0}
+#define RM {bits_rm, 3, 0}
+#define DISP_LO {bits_disp_lo, 8, 0}
+#define DISP_HI {bits_disp_hi, 8, 0}
+#define DATA {bits_data, 8, 0}
+#define DATA_IF_W {bits_data_if_w, 8, 0}
+#define ADDR_LO {bits_addr_lo, 8, 0}
+#define ADDR_HI {bits_addr_hi, 8, 0}
+
+
+#define ENCODINGS(FIRST, DUPE) \
+	FIRST(mov, { LITERAL(100010), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
+	DUPE(mov, { LITERAL(1100011), W, MOD, LITERAL(000), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
+	DUPE(mov, { LITERAL(1011), W, REG, DATA, DATA_IF_W }) \
+	DUPE(mov, { LITERAL(1010000), W, ADDR_LO, ADDR_HI }) \
+	DUPE(mov, { LITERAL(1010001), W, ADDR_LO, ADDR_HI }) \
+
+#define ENCODINGS_NOOP(name, ...)
+
+// ============================================================================
+// Bits macros + table
+// ============================================================================
+
+#define BITS(F) \
+	F(literal) \
+	F(d) \
+	F(w) \
+	F(mod) \
+	F(reg) \
+	F(rm) \
+	F(disp_lo) \
+	F(disp_hi) \
+	F(data) \
+	F(data_if_w) \
+	F(addr_lo) \
+	F(addr_hi) \
+
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+#define BITS_TO_ENUM(name) bits_##name,
+enum bits {
+	bits_end,
+
+	BITS(BITS_TO_ENUM)
+
+	bits_count,
 };
-struct op_t {
-	uint8_t opcode_len;
-	uint8_t opcode;
-	void (*impl)(struct sim_state_t *state, struct op_t *op);
+
+#define ENCODING_TO_PNEUMONIC(name, ...) op_##name,
+enum pneumonic {
+	ENCODINGS(ENCODING_TO_PNEUMONIC, ENCODINGS_NOOP)
+	op_count,
 };
+
+enum operand_type {
+	operand_end,
+
+	operand_register,
+	operand_memory,
+	operand_immediate,
+
+	operand_count,
+};
+
+// ============================================================================
+// Structs
+// ============================================================================
+
+struct encoding_block {
+	enum bits type;
+	uint8_t size;
+	uint8_t value;
+};
+
+struct encoding {
+	enum pneumonic op;
+	struct encoding_block blocks[MAX_BLOCKS];
+};
+
+struct operand {
+	enum operand_type type;
+	union {
+		struct register_operand {
+			uint8_t index;
+			uint8_t offset; // in bytes
+			uint8_t width; // in bytes
+		} reg;
+		struct memory_operand {
+			struct register_operand effective_address[2];
+			int16_t displacement;
+		} mem;
+		struct immediate_operand {
+			int16_t value;
+		} imm;
+	};
+};
+
+struct instruction {
+	enum pneumonic op;
+	struct operand operands[MAX_OPERANDS];
+};
+
+struct decoder_t {
+	char *filename;
+
+	uint32_t bytes_curr;
+	uint32_t bytes_cap;
+	uint32_t bytes_len;
+	uint8_t *bytes;
+
+	uint32_t instructions_curr;
+	uint32_t instructions_cap;
+	uint32_t instructions_len;
+	struct instruction *instructions;
+
+	// TODO: labels?
+};
+struct decoder_t decoder;
+
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-// Table 4-9 (MOD = 11)
-const char **REGISTER_MODE_TABLE[2] = {
-	(const char*[8]){"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"}, // w = 0
-	(const char*[8]){"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"}, // w = 1
+#define BITS_TO_STRING(name) #name,
+const char *bits_strings[bits_count] = {
+	"[END]",
+	BITS(BITS_TO_STRING)
 };
 
-const char *EFFECTIVE_ADDRESS_CALCULATION_TABLE[8] = {
-	"bx + si",
-	"bx + di",
-	"bp + si",
-	"bp + di",
-	"si",
-	"di",
-	"bp",
-	"bx",
+#define ENCODING_TO_PNEUMONIC_STRING(name, ...) #name,
+const char *pneumonic_strings[op_count] = {
+	ENCODINGS(ENCODING_TO_PNEUMONIC_STRING, ENCODINGS_NOOP)
+};
+
+#define ENCODING_TO_STRUCT(name, blocks, ...) { op_##name, blocks, __VA_ARGS__ },
+const struct encoding encodings[] = {
+	ENCODINGS(ENCODING_TO_STRUCT, ENCODING_TO_STRUCT)
+};
+const uint32_t NUM_ENCODINGS = sizeof(encodings) / sizeof(encodings[0]);
+
+// Given a register (index, offset, width) = REG_NAMES[index][offset][width-1]
+const char *REG_NAMES[13][2][2] = {
+ { {"al", "ax"}, {"ah"} },
+ { {"bl", "bx"}, {"bh"} },
+ { {"cl", "cx"}, {"ch"} },
+ { {"dl", "dx"}, {"dh"} },
+ { {0, "sp"}, {0} },
+ { {0, "bp"}, {0} },
+ { {0, "si"}, {0} },
+ { {0, "di"}, {0} },
+ { {0, "cs"}, {0} },
+ { {0, "ds"}, {0} },
+ { {0, "ss"}, {0} },
+ { {0, "es"}, {0} },
+ { {0, "ip"}, {0} },
+};
+
+#define AL {0,  0, 1}
+#define AX {0,  0, 2}
+#define AH {0,  1, 1}
+#define BL {1,  0, 1}
+#define BX {1,  0, 2}
+#define BH {1,  1, 1}
+#define CL {2,  0, 1}
+#define CX {2,  0, 2}
+#define CH {2,  1, 1}
+#define DL {3,  0, 1}
+#define DX {3,  0, 2}
+#define DH {3,  1, 1}
+#define SP {4,  0, 2}
+#define BP {5,  0, 2}
+#define SI {6,  0, 2}
+#define DI {7,  0, 2}
+#define CS {8,  0, 2}
+#define DS {9,  0, 2}
+#define SS {10, 0, 2}
+#define ES {11, 0, 2}
+#define IP {12, 0, 2}
+
+const struct register_operand W_RM_REG[2][8] = {
+	{ AL, CL, DL, BL, AH, CH, DH, BH },
+	{ AX, CX, DX, BX, SP, BP, SI, DI },
 };
 
 // ============================================================================
-// Utils
+// Functions
 // ============================================================================
 
-// Read a byte from the file, exiting if it is EOF. Otherwise, return the byte
-// as an unsigned 8-bit integer
-uint8_t read_byte(struct sim_state_t *state) {
-	int b = fgetc(state->fp);
-	if (b == EOF) {
-		fclose(state->fp);
-		exit(0);
-	}
-	return (uint8_t)b;
+// TODO: trap for this?
+void cleanup_and_exit(int exit_code) {
+	free(decoder.bytes);
+	free(decoder.instructions);
+	exit(exit_code);
 }
 
-// Read two bytes from the file, returning a signed word constructed from them.
-// The second byte contains the most significant bits.
-int16_t read_word(struct sim_state_t *state) {
-	uint8_t a = read_byte(state);
-	uint8_t b = read_byte(state);
-	return (uint16_t)(b << 8) | (uint16_t)(a);
-}
+void print_instruction_disasm(struct instruction instr) {
+	printf("%s", pneumonic_strings[instr.op]);
 
-// ============================================================================
-// Instruction handlers
-// ============================================================================
-void core_rm2rm(const char* op_name, struct sim_state_t *state, struct op_t *op) {
-	uint8_t options_byte = read_byte(state);
-
-	uint8_t d = (state->op_byte >> 1) & 1;
-	uint8_t w = state->op_byte & 1;
-
-	uint8_t mod = (options_byte >> 6) & 3;
-	uint8_t reg = (options_byte >> 3) & 7;
-	uint8_t rm = options_byte & 7;
-
-	switch (mod) {
-		case REGISTER_MODE:
-			if (d) {
-				printf("%s %s, %s\n", op_name, REGISTER_MODE_TABLE[w][reg], REGISTER_MODE_TABLE[w][rm]);
-			} else {
-				printf("%s %s, %s\n", op_name, REGISTER_MODE_TABLE[w][rm], REGISTER_MODE_TABLE[w][reg]);
-			}
-			break;
-		case MEMORY_MODE_16:
-			{
-				int16_t displacement = read_word(state);
-				if (d) {
-					printf("%s %s, [%s + %d]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
-				} else {
-					printf("%s [%s + %d], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
-				}
+	uint8_t done = 0;
+	char *sep = " ";
+	for (int j = 0; j < MAX_OPERANDS; j++) {
+		struct operand o = instr.operands[j];
+		switch (o.type) {
+			case operand_end:
+				done = 1;
 				break;
-			}
-		case MEMORY_MODE_8:
-			{
-				int8_t displacement = read_byte(state);
-				if (d) {
-					printf("%s %s, [%s + %d]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement);
-				} else {
-					printf("%s [%s + %d], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], displacement, REGISTER_MODE_TABLE[w][reg]);
-				}
+			case operand_count:
 				break;
-			}
-		case MEMORY_MODE_0:
-			if (rm == 6) {
-				// Direct address, 16-bit
-				int16_t displacement = read_word(state);
-				if (d) {
-					printf("%s %s, [%d]\n", op_name, REGISTER_MODE_TABLE[w][reg], displacement);
-				} else {
-					printf("%s [%d], %s\n", op_name, displacement, REGISTER_MODE_TABLE[w][reg]);
-				}
-			} else {
-				// Normal memory mode, no displacement
-				if (d) {
-					printf("%s %s, [%s]\n", op_name, REGISTER_MODE_TABLE[w][reg], EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm]);
-				} else {
-					printf("%s [%s], %s\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], REGISTER_MODE_TABLE[w][reg]);
-				}
-			}
-			break;
-		default:
-			break;
-	}
-}
-
-void core_i2rm(char *op_name, struct sim_state_t *state, struct op_t *op, uint8_t s, uint8_t w, uint8_t mod, uint8_t rm) {
-	int16_t data_disp = read_byte(state);
-	char *prefix = "byte";
-
-	if (!s && w) {
-		data_disp = (uint16_t)(read_byte(state) << 8) | data_disp;
-		prefix = "word";
-	}
-
-	switch (mod) {
-		case REGISTER_MODE:
-			printf("%s %s, %s %d\n", op_name, REGISTER_MODE_TABLE[w][rm], prefix, data_disp);
-			break;
-		case MEMORY_MODE_16:
-			{
-				int16_t data = read_word(state);
-				printf("%s [%s + %d], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data_disp, prefix, data);
+			case operand_register:
+				printf("%s%s", sep, REG_NAMES[o.reg.index][o.reg.offset][o.reg.width-1]);
 				break;
-			}
-		case MEMORY_MODE_8:
-			{
-				int8_t data = read_byte(state);
-				printf("%s [%s + %d], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], data_disp, prefix, data);
+			case operand_memory:
 				break;
+			case operand_immediate:
+				break;
+		}
+
+		if (done) {
+			break;
+		}
+
+		sep = ", ";
+	}
+	printf("\n");
+}
+
+void print_disasm() {
+	printf("; %s\nbits 16\n\n", decoder.filename);
+
+	for (uint32_t i = 0; i < decoder.instructions_len; i++) {
+		print_instruction_disasm(decoder.instructions[i]);
+	}
+}
+
+void init_decoder(char *filename) {
+	decoder.filename = filename;
+
+	// Init state and open input file.
+	// Do this before struct init to avoid cleanup
+	FILE *fp = fopen(filename, "rb");
+	if (fp == NULL) {
+		printf("Could not open file {%s}\n", filename);
+		exit(2);
+	}
+
+	// Struct init
+	decoder.bytes_curr = 0;
+	decoder.bytes_cap = INITIAL_CAP*2;
+	decoder.bytes_len = 0;
+	decoder.bytes = malloc(decoder.bytes_cap);
+	decoder.instructions_curr = 0;
+	decoder.instructions_cap = INITIAL_CAP;
+	decoder.instructions_len = 0;
+	decoder.instructions = malloc(
+			sizeof(struct instruction) * decoder.instructions_cap);
+
+	// Read input file into memory
+	int c = fgetc(fp);
+	while (c != EOF) {
+		decoder.bytes[decoder.bytes_len++] = (uint8_t)c;
+
+		// Expand capacity if needed
+		if (decoder.bytes_len == decoder.bytes_cap) {
+			decoder.bytes_cap <<= 1;
+			decoder.bytes = realloc(decoder.bytes, decoder.bytes_cap);
+		}
+		c = fgetc(fp);
+	}
+
+	// Shrink container to fit content
+	decoder.bytes = realloc(decoder.bytes, decoder.bytes_len);
+
+	fclose(fp);
+}
+
+uint8_t decoder_next() {
+	//printf("decoder loc %d\n", decoder.bytes_curr);
+	if (decoder.bytes_curr < decoder.bytes_len) {
+		return decoder.bytes[decoder.bytes_curr++];
+	}
+
+	printf("Reached end of bytes unexpectedly!\n");
+	cleanup_and_exit(4);
+
+	__builtin_unreachable();
+}
+
+void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_table[bits_count], uint8_t bits_seen[bits_count]) {
+	/*
+	printf("Matched %s!\n", pneumonic_strings[current_encoding.op]);
+	for (int j = 1; j < bits_count; j++) {
+		printf("  %s=%d (%d)\n", bits_strings[j], bits_table[j], bits_seen[j]);
+	}
+	*/
+
+	struct instruction instr = {
+		.op = current_encoding.op,
+	};
+
+	struct operand op1, op2;
+
+	uint8_t mod = bits_table[bits_mod];
+	uint8_t d = bits_table[bits_d];
+	uint8_t w = bits_table[bits_w];
+	uint8_t reg = bits_table[bits_reg];
+	uint8_t rm = bits_table[bits_rm];
+
+	if (bits_seen[bits_mod]) {
+		// MOD formatted instruction
+		if (mod == 0b11) {
+			op1 = (struct operand){
+				.type = operand_register,
+				.reg = W_RM_REG[w][reg]
+			};
+			op2 = (struct operand){
+				.type = operand_register,
+				.reg = W_RM_REG[w][rm]
+			};
+		} else if ((mod == 0b10) || (mod == 0b00 && rm == 0b110)) {
+			// TODO: 16-bit displacement
+		} else if (mod == 0b01) {
+			// TODO: 8-bit displacement
+		}
+	} else if (bits_seen[bits_reg]) {
+		// Single reg instruction
+		// TODO: HANDLE SINGLE REG
+	}
+
+	if (bits_seen[bits_d]) {
+		if (d) {
+			instr.operands[0] = op1;
+			instr.operands[1] = op2;
+		} else {
+			instr.operands[0] = op2;
+			instr.operands[1] = op1;
+		}
+	} else {
+		// TODO:
+	}
+
+	print_instruction_disasm(instr);
+
+	decoder.instructions[decoder.instructions_len++] = instr;
+
+	// Expand capacity if needed
+	if (decoder.instructions_len == decoder.instructions_cap) {
+		decoder.instructions_cap <<= 1;
+		decoder.instructions = realloc(decoder.instructions, decoder.instructions_cap);
+	}
+}
+
+void decode() {
+	while (decoder.bytes_curr < decoder.bytes_len) {
+		uint8_t current_byte = decoder_next();
+		uint8_t found = 0;
+
+		// Test all encodings to see if this matches
+		for (uint32_t i = 0; i < NUM_ENCODINGS; i++) {
+			struct encoding current_encoding = encodings[i];
+
+			// Check first block
+			struct encoding_block *current_block = current_encoding.blocks;
+
+			// If the current_byte does not look match the first block, skip it
+			uint32_t shift = 8 - current_block->size;
+			if ((current_byte >> shift) != current_block->value) {
+				continue;
 			}
-			break;
-		case MEMORY_MODE_0:
-			if (rm == 6) {
-				int16_t data = read_word(state);
-				printf("%s [%d], %s %d\n", op_name, data_disp, prefix, data);
-			} else {
-				printf("%s [%s], %s %d\n", op_name, EFFECTIVE_ADDRESS_CALCULATION_TABLE[rm], prefix, data_disp);
+
+			// First literal matched, this *could* be the encoding
+			found = 1;
+
+			// Vars for parsing blocks
+			uint8_t bits_table[bits_count] = {0};
+			uint8_t bits_seen[bits_count] = {0};
+			uint32_t decoder_prev = decoder.bytes_curr;
+
+			// Pull data out of rest of blocks
+			while ((++current_block)->type != bits_end) {
+				uint8_t w = bits_table[bits_w];
+				uint8_t mod = bits_table[bits_mod];
+				uint8_t rm = bits_table[bits_rm];
+				uint8_t need_disp_lo = bits_seen[mod] && ((mod == 0b01) || (mod == 0b10) || (mod == 0b00 && rm == 0b110));
+				uint8_t need_disp_hi= bits_seen[mod] && ((mod == 0b10) || (mod == 0b00 && rm == 0b110));
+
+				if (current_block->type == bits_disp_lo && !need_disp_lo) {
+					continue;
+				} else if (current_block->type == bits_disp_hi && !need_disp_hi) {
+					continue;
+				} else if (current_block->type == bits_data_if_w && !w) {
+					continue;
+				}
+
+				// Take bits
+				if (shift == 0) {
+					shift = 8;
+					current_byte = decoder_next();
+				}
+
+				if (current_block->size) {
+					// Get bits if this block needs to
+					shift -= current_block->size;
+					uint8_t mask = (uint8_t)((1<<current_block->size)-1);
+					uint8_t value = (uint8_t)(current_byte >> shift) & mask;
+					bits_table[current_block->type] = value;
+					bits_seen[current_block->type] = 1;
+				} else {
+					// Set bits if block provides explicit value
+					bits_table[current_block->type] = current_block->value;
+					bits_seen[current_block->type] = 1;
+				}
+
+				if ((current_block->type == bits_literal) &&
+						(bits_table[current_block->type] != current_block->value)) {
+					// If this is a literal and the value does not line up
+					// this is not the encoding
+					decoder.bytes_curr = decoder_prev;
+					found = 0;
+					break;
+				}
 			}
+
+			// Some other literal did not match, not the encoding
+			if (!found) {
+				continue;
+			}
+
+			build_and_store_instruction(current_encoding, bits_table, bits_seen);
 			break;
-		default:
-			break;
-	}
-}
+		}
 
-void mov_rm2rm(struct sim_state_t *state, struct op_t *op) {
-	core_rm2rm("mov", state, op);
-}
-
-void mov_i2rm(struct sim_state_t *state, struct op_t *op) {
-	uint8_t w = state->op_byte & 1;
-
-	uint8_t options_byte = read_byte(state);
-	uint8_t mod = (options_byte>> 6) & 3;
-	uint8_t rm = options_byte & 7;
-
-	core_i2rm("mov", state, op, 0, w, mod, rm);
-}
-
-void mov_i2r(struct sim_state_t *state, struct op_t *op) {
-	uint8_t w = (state->op_byte >> 3) & 1;
-	uint8_t reg = (state->op_byte) & 7;
-	int16_t data = read_byte(state);
-	char *prefix = "byte";
-
-	if (w) {
-		data = (uint16_t)(read_byte(state) << 8) | data;
-		prefix = "word";
+		if (!found) {
+			printf("No encodings found for byte: %d\n", current_byte);
+			cleanup_and_exit(5);
+		}
 	}
 
-	printf("mov %s, %s %d \n", REGISTER_MODE_TABLE[w][reg], prefix, data);
+	// Shrink container to fit content
+	decoder.instructions = realloc(decoder.instructions, sizeof(struct instruction) * decoder.instructions_len);
 }
 
-void mov_m2a(struct sim_state_t *state, struct op_t *op) {
-	uint8_t w = state->op_byte & 1;
-	uint16_t addr = read_word(state);
-	char reg_suffix = 'l';
+void verify_encodings() {
+	for (uint32_t i = 0; i < NUM_ENCODINGS; i++) {
+		struct encoding current_encoding = encodings[i];
 
-	if (w) {
-		reg_suffix = 'x';
-	}
+		// Check first block
+		struct encoding_block first_block = current_encoding.blocks[0];
 
-	printf("mov a%c, [%d]\n", reg_suffix, addr);
-}
+		// Must be literal
+		if (first_block.type != bits_literal) {
+			printf("First block in encoding [%d] %s is not bits_literal; is %s\n",
+					i,
+					pneumonic_strings[current_encoding.op],
+					bits_strings[first_block.type]);
+			cleanup_and_exit(2);
+		}
 
-void mov_a2m(struct sim_state_t *state, struct op_t *op) {
-	uint8_t w = state->op_byte & 1;
-	uint16_t addr = read_word(state);
-	char reg_suffix = 'l';
+		// Confirm that there are trailing 0 bytes at the end of the blocks
+		uint8_t has_end = 0;
+		for (int j = 0; j < MAX_BLOCKS; j++) {
+			struct encoding_block current_block = current_encoding.blocks[j];
+			if (current_block.type == bits_end) {
+				has_end = 1;
+			}
+		}
 
-	if (w) {
-		reg_suffix = 'x';
-	}
-
-	printf("mov [%d], a%c\n", addr, reg_suffix);
-}
-
-void shared_i2rm(struct sim_state_t *state, struct op_t *op) {
-	uint8_t s = (state->op_byte >> 1) & 1;
-	uint8_t w = state->op_byte & 1;
-
-	uint8_t options_byte = read_byte(state);
-	uint8_t mod = (options_byte >> 6) & 3;
-	uint8_t local_op = (options_byte >> 3) & 7;
-	uint8_t rm = options_byte & 7;
-
-	switch (local_op) {
-		case 0:
-			core_i2rm("add", state, op, s, w, mod, rm);
-			break;
-		case 5:
-			core_i2rm("sub", state, op, s, w, mod, rm);
-			break;
-		case 7:
-			core_i2rm("cmp", state, op, s, w, mod, rm);
-			break;
+		if (!has_end) {
+			printf("Encoding [%d] %s has too many blocks\n",
+					i, pneumonic_strings[current_encoding.op]);
+			cleanup_and_exit(3);
+		}
 	}
 }
-
-void core_i2a(char *op_name, struct sim_state_t *state, struct op_t *op) {
-	uint8_t w = state->op_byte & 1;
-	uint16_t data = read_byte(state);
-	char reg_suffix = 'l';
-
-	if (w) {
-		data = (uint16_t)(read_byte(state) << 8) | data;
-		reg_suffix = 'x';
-	}
-
-	printf("%s a%c, %d \n", op_name, reg_suffix, data);
-}
-
-void add_rm2rm(struct sim_state_t *state, struct op_t *op) {
-	core_rm2rm("add", state, op);
-}
-
-void add_i2a(struct sim_state_t *state, struct op_t *op) {
-	core_i2a("add", state, op);
-}
-
-void sub_rm2rm(struct sim_state_t *state, struct op_t *op) {
-	core_rm2rm("sub", state, op);
-}
-
-void sub_i2a(struct sim_state_t *state, struct op_t *op) {
-	core_i2a("sub", state, op);
-}
-
-void cmp_rm2rm(struct sim_state_t *state, struct op_t *op) {
-	core_rm2rm("cmp", state, op);
-}
-
-void cmp_i2a(struct sim_state_t *state, struct op_t *op) {
-	core_i2a("cmp", state, op);
-}
-
-void je(struct sim_state_t *state, struct op_t *op) {
-	printf("je %d\n", (int8_t)read_byte(state));
-}
-
-void jl(struct sim_state_t *state, struct op_t *op) {
-	printf("jl %d\n", (int8_t)read_byte(state));
-}
-
-void jle(struct sim_state_t *state, struct op_t *op) {
-	printf("jle %d\n", (int8_t)read_byte(state));
-}
-
-void jb(struct sim_state_t *state, struct op_t *op) {
-	printf("jb %d\n", (int8_t)read_byte(state));
-}
-
-void jbe(struct sim_state_t *state, struct op_t *op) {
-	printf("jbe %d\n", (int8_t)read_byte(state));
-}
-
-void jp(struct sim_state_t *state, struct op_t *op) {
-	printf("jp %d\n", (int8_t)read_byte(state));
-}
-
-void jo(struct sim_state_t *state, struct op_t *op) {
-	printf("jo %d\n", (int8_t)read_byte(state));
-}
-
-void js(struct sim_state_t *state, struct op_t *op) {
-	printf("js %d\n", (int8_t)read_byte(state));
-}
-
-void jnz(struct sim_state_t *state, struct op_t *op) {
-	printf("jnz %d\n", (int8_t)read_byte(state));
-}
-
-void jnl(struct sim_state_t *state, struct op_t *op) {
-	printf("jnl %d\n", (int8_t)read_byte(state));
-}
-
-void jnle(struct sim_state_t *state, struct op_t *op) {
-	printf("jnle %d\n", (int8_t)read_byte(state));
-}
-
-void jnb(struct sim_state_t *state, struct op_t *op) {
-	printf("jnb %d\n", (int8_t)read_byte(state));
-}
-
-void jnbe(struct sim_state_t *state, struct op_t *op) {
-	printf("jnbe %d\n", (int8_t)read_byte(state));
-}
-
-void jnp(struct sim_state_t *state, struct op_t *op) {
-	printf("jnp %d\n", (int8_t)read_byte(state));
-}
-
-void jno(struct sim_state_t *state, struct op_t *op) {
-	printf("jno %d\n", (int8_t)read_byte(state));
-}
-
-void jns(struct sim_state_t *state, struct op_t *op) {
-	printf("jns %d\n", (int8_t)read_byte(state));
-}
-
-void loop(struct sim_state_t *state, struct op_t *op) {
-	printf("loop %d\n", (int8_t)read_byte(state));
-}
-
-void loopz(struct sim_state_t *state, struct op_t *op) {
-	printf("loopz %d\n", (int8_t)read_byte(state));
-}
-
-void loopnz(struct sim_state_t *state, struct op_t *op) {
-	printf("loopnz %d\n", (int8_t)read_byte(state));
-}
-
-void jcxz(struct sim_state_t *state, struct op_t *op) {
-	printf("jcxz %d\n", (int8_t)read_byte(state));
-}
-
 
 // ============================================================================
 // Entrypoint
 // ============================================================================
 int main(int argc, char *argv[]) {
-	// Main-scoped constants
-	const struct op_t OPS[] = {
-		(struct op_t) { .opcode_len = 6,  .opcode = 0b00100010,   .impl = mov_rm2rm          },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b01100011,   .impl = mov_i2rm           },
-		(struct op_t) { .opcode_len = 4,  .opcode = 0b00001011,   .impl = mov_i2r            },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b01010000,   .impl = mov_m2a            },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b01010001,   .impl = mov_a2m            },
-		(struct op_t) { .opcode_len = 6,  .opcode = 0b00100000,   .impl = shared_i2rm        },
-		(struct op_t) { .opcode_len = 6,  .opcode = 0b00000000,   .impl = add_rm2rm          },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b00000010,   .impl = add_i2a            },
-		(struct op_t) { .opcode_len = 6,  .opcode = 0b00001010,   .impl = sub_rm2rm          },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b00010110,   .impl = sub_i2a            },
-		(struct op_t) { .opcode_len = 6,  .opcode = 0b00001110,   .impl = cmp_rm2rm          },
-		(struct op_t) { .opcode_len = 7,  .opcode = 0b00011110,   .impl = cmp_i2a            },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110100,   .impl = je                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111100,   .impl = jl                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111110,   .impl = jle                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110010,   .impl = jb                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110110,   .impl = jbe                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111010,   .impl = jp                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110000,   .impl = jo                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111000,   .impl = js                 },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110101,   .impl = jnz                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111101,   .impl = jnl                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111111,   .impl = jnle               },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110011,   .impl = jnb                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110111,   .impl = jnbe               },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111011,   .impl = jnp                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01110001,   .impl = jno                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b01111001,   .impl = jns                },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100010,   .impl = loop               },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100001,   .impl = loopz              },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100000,   .impl = loopnz             },
-		(struct op_t) { .opcode_len = 8,  .opcode = 0b11100011,   .impl = jcxz               },
-	};
-
-	const int NUM_OPS = sizeof(OPS)/sizeof(struct op_t);
-
 	// "Parse" args
 	if (argc != 2) {
-		printf("Must provide machine code filename as sole argument\n");
+		printf("USAGE: sim8086 FILENAME\n");
 		return 1;
 	}
 
-	// Init state and open input file
-	struct sim_state_t state = {0};
-	state.fp = fopen(argv[1], "rb");
-	if (state.fp == NULL) {
-		printf("Could not open file {%s}\n", argv[1]);
-		return 2;
-	}
+	verify_encodings();
 
-	// Write header
-	printf("; %s:\nbits 16\n\n", argv[1]);
-
-	// Read bytes while there are bytes left and we haven't hit an error
-	while (1) {
-		state.op_byte = read_byte(&state);
-
-		// Check if current byte starts a known op
-		uint8_t found = 0;
-		for (int i = 0; i < NUM_OPS; i++) {
-			struct op_t op = OPS[i];
-			if ((state.op_byte >> (8-op.opcode_len)) == op.opcode) {
-				op.impl(&state, &op);
-				found = 1;
-				break;
-			}
-		}
-
-		if (!found) {
-			printf("Unknown op from byte=%d\n", state.op_byte);
-			fclose(state.fp);
-			return 100;
-		}
-	}
-
-	fclose(state.fp);
-	return 0;
+	init_decoder(argv[1]);
+	decode();
+	print_disasm();
+	cleanup_and_exit(0);
 }
