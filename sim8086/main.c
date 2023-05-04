@@ -26,6 +26,7 @@
 #define LITERAL(b) {bits_literal, sizeof(#b) - 1, 0b##b}
 #define END {bits_end, 0, 0}
 #define D {bits_d, 1, 0}
+#define S {bits_s, 1, 0}
 #define W {bits_w, 1, 0}
 #define MOD {bits_mod, 2, 0}
 #define REG {bits_reg, 3, 0}
@@ -54,6 +55,7 @@
 #define BITS(F) \
 	F(literal) \
 	F(d) \
+	F(s) \
 	F(w) \
 	F(mod) \
 	F(reg) \
@@ -90,6 +92,7 @@ enum operand_type {
 
 	operand_register,
 	operand_memory,
+	operand_direct_address,
 	operand_immediate,
 
 	operand_count,
@@ -122,6 +125,9 @@ struct operand {
 			struct register_operand effective_address[2];
 			int16_t displacement;
 		} mem;
+		struct direct_address_operand {
+			int16_t displacement;
+		} dir;
 		struct immediate_operand {
 			int16_t value;
 		} imm;
@@ -216,6 +222,7 @@ const struct register_operand W_RM_REG[2][8] = {
 	{ AX, CX, DX, BX, SP, BP, SI, DI },
 };
 
+
 // ============================================================================
 // Functions
 // ============================================================================
@@ -244,8 +251,30 @@ void print_instruction_disasm(struct instruction instr) {
 				printf("%s%s", sep, REG_NAMES[o.reg.index][o.reg.offset][o.reg.width-1]);
 				break;
 			case operand_memory:
+				{
+					struct register_operand first_reg = o.mem.effective_address[0];
+					const char *first_reg_name = REG_NAMES[first_reg.index][first_reg.offset][first_reg.width-1];
+					printf("%s[%s", sep, first_reg_name);
+
+					struct register_operand second_reg = o.mem.effective_address[1];
+					if (second_reg.width) {
+						const char *second_reg_name = REG_NAMES[second_reg.index][second_reg.offset][second_reg.width-1];
+						printf("+%s",  second_reg_name);
+					}
+
+					if (o.mem.displacement == 0) {
+						printf("]");
+					} else {
+						char plus_last = o.mem.displacement > 0 ? '+' : 0;
+						printf("%c%d]", plus_last, o.mem.displacement);
+					}
+					break;
+				}
+			case operand_direct_address:
+				printf("%s[%d]", sep, o.dir.displacement);
 				break;
 			case operand_immediate:
+				printf("%s%d", sep, o.imm.value);
 				break;
 		}
 
@@ -338,29 +367,60 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	uint8_t w = bits_table[bits_w];
 	uint8_t reg = bits_table[bits_reg];
 	uint8_t rm = bits_table[bits_rm];
+	uint8_t disp_lo = bits_table[bits_disp_lo];
+	uint8_t disp_hi = bits_table[bits_disp_hi];
+	uint8_t data = bits_table[bits_data];
+	uint8_t data_if_w = bits_table[bits_data_if_w];
 
 	if (bits_seen[bits_mod]) {
 		// MOD formatted instruction
-		if (mod == 0b11) {
-			op1 = (struct operand){
-				.type = operand_register,
+		op1 = (struct operand){
+			.type = operand_register,
 				.reg = W_RM_REG[w][reg]
-			};
+		};
+
+		if (mod == 0b11) {
 			op2 = (struct operand){
 				.type = operand_register,
-				.reg = W_RM_REG[w][rm]
+					.reg = W_RM_REG[w][rm]
 			};
-		} else if ((mod == 0b10) || (mod == 0b00 && rm == 0b110)) {
-			// TODO: 16-bit displacement
-		} else if (mod == 0b01) {
-			// TODO: 8-bit displacement
-		}
-	} else if (bits_seen[bits_reg]) {
-		// Single reg instruction
-		// TODO: HANDLE SINGLE REG
-	}
+		} else if (mod == 0b10 || mod == 0b01 || (mod == 0b00 && rm != 0b110)) {
+			// 16-bit displacement
+			// 8-bit displacement
 
-	if (bits_seen[bits_d]) {
+			op2 = (struct operand){
+				.type = operand_memory,
+					.mem = {
+						.effective_address = { {0}, {0} },
+						.displacement = (uint16_t)(disp_hi << 8) | disp_lo,
+					},
+			};
+
+			switch (rm) {
+				case 0: { op2.mem.effective_address[0] = (struct register_operand)BX; op2.mem.effective_address[1] = (struct register_operand)SI; break; }
+				case 1: { op2.mem.effective_address[0] = (struct register_operand)BX; op2.mem.effective_address[1] = (struct register_operand)DI; break; }
+				case 2: { op2.mem.effective_address[0] = (struct register_operand)BP; op2.mem.effective_address[1] = (struct register_operand)SI; break; }
+				case 3: { op2.mem.effective_address[0] = (struct register_operand)BP; op2.mem.effective_address[1] = (struct register_operand)DI; break; }
+				case 4: { op2.mem.effective_address[0] = (struct register_operand)SI; break; }
+				case 5: { op2.mem.effective_address[0] = (struct register_operand)DI; break; }
+				case 6: { op2.mem.effective_address[0] = (struct register_operand)BP; break; }
+				case 7: { op2.mem.effective_address[0] = (struct register_operand)BX; break; }
+				default: break;
+			}
+
+		instr.operands[0] = op1;
+		instr.operands[1] = op2;
+
+		} else if (mod == 0b00 && rm == 0b110) {
+			// direct 16 bit address
+			op2 = (struct operand){
+				.type = operand_memory,
+					.dir = {
+						.displacement = (uint16_t)(disp_hi << 8) | disp_lo,
+					},
+			};
+		}
+
 		if (d) {
 			instr.operands[0] = op1;
 			instr.operands[1] = op2;
@@ -368,11 +428,25 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 			instr.operands[0] = op2;
 			instr.operands[1] = op1;
 		}
-	} else {
-		// TODO:
-	}
+	} else if (bits_seen[bits_reg]) {
+		// Single reg instruction
+		// TODO: HANDLE SINGLE REG
+		op1 = (struct operand){
+			.type = operand_register,
+				.reg = W_RM_REG[w][reg]
+		};
 
-	print_instruction_disasm(instr);
+		op2 = (struct operand){
+			.type = operand_immediate,
+				.imm = {
+					.value = (uint16_t)(data_if_w << 8) | data,
+				},
+		};
+
+		instr.operands[0] = op1;
+		instr.operands[1] = op2;
+	}
+		//print_instruction_disasm(instr);
 
 	decoder.instructions[decoder.instructions_len++] = instr;
 
@@ -414,8 +488,8 @@ void decode() {
 				uint8_t w = bits_table[bits_w];
 				uint8_t mod = bits_table[bits_mod];
 				uint8_t rm = bits_table[bits_rm];
-				uint8_t need_disp_lo = bits_seen[mod] && ((mod == 0b01) || (mod == 0b10) || (mod == 0b00 && rm == 0b110));
-				uint8_t need_disp_hi= bits_seen[mod] && ((mod == 0b10) || (mod == 0b00 && rm == 0b110));
+				uint8_t need_disp_lo = bits_seen[bits_mod] && ((mod == 0b01) || (mod == 0b10) || (mod == 0b00 && rm == 0b110));
+				uint8_t need_disp_hi= bits_seen[bits_mod] && ((mod == 0b10) || (mod == 0b00 && rm == 0b110));
 
 				if (current_block->type == bits_disp_lo && !need_disp_lo) {
 					continue;
@@ -464,7 +538,7 @@ void decode() {
 		}
 
 		if (!found) {
-			printf("No encodings found for byte: %d\n", current_byte);
+			printf("No encodings found for byte: %d at %d\n", current_byte, decoder.bytes_curr);
 			cleanup_and_exit(5);
 		}
 	}
