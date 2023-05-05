@@ -52,7 +52,37 @@
 	\
 	FIRST(add, { LITERAL(000000), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
 	DUPE(add, { LITERAL(100000), S, W, MOD, LITERAL(000), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
-	DUPE(add, { LITERAL(0000010), W, DATA, DATA_IF_W }) \
+	DUPE(add, { LITERAL(0000010), W, DATA, DATA_IF_W, IMP_REG(0), IMP_D(1) }) \
+	\
+	FIRST(sub, { LITERAL(001010), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
+	DUPE(sub, { LITERAL(100000), S, W, MOD, LITERAL(101), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
+	DUPE(sub, { LITERAL(0010110), W, DATA, DATA_IF_W, IMP_REG(0), IMP_D(1) }) \
+	\
+	FIRST(cmp, { LITERAL(001110), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
+	DUPE(cmp, { LITERAL(100000), S, W, MOD, LITERAL(111), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
+	DUPE(cmp, { LITERAL(0011110), W, DATA, DATA_IF_W, IMP_REG(0), IMP_D(1) }) \
+	\
+	FIRST(je,   { LITERAL(01110100), ADDR_LO, IMP_D(1) }) \
+	FIRST(jl,   { LITERAL(01111100), ADDR_LO, IMP_D(1) }) \
+	FIRST(jle,  { LITERAL(01111110), ADDR_LO, IMP_D(1) }) \
+	FIRST(jb,   { LITERAL(01110010), ADDR_LO, IMP_D(1) }) \
+	FIRST(jbe,  { LITERAL(01110110), ADDR_LO, IMP_D(1) }) \
+	FIRST(jp,   { LITERAL(01111010), ADDR_LO, IMP_D(1) }) \
+	FIRST(jo,   { LITERAL(01110000), ADDR_LO, IMP_D(1) }) \
+	FIRST(js,   { LITERAL(01111000), ADDR_LO, IMP_D(1) }) \
+	FIRST(jne,  { LITERAL(01110101), ADDR_LO, IMP_D(1) }) \
+	FIRST(jnl,  { LITERAL(01111101), ADDR_LO, IMP_D(1) }) \
+	FIRST(jnle, { LITERAL(01111111), ADDR_LO, IMP_D(1) }) \
+	FIRST(jnb,  { LITERAL(01110011), ADDR_LO, IMP_D(1) }) \
+	FIRST(jnbe, { LITERAL(01110111), ADDR_LO, IMP_D(1) }) \
+	FIRST(jnp,  { LITERAL(01111011), ADDR_LO, IMP_D(1) }) \
+	FIRST(jno,  { LITERAL(01110001), ADDR_LO, IMP_D(1) }) \
+	\
+	FIRST(jns,     { LITERAL(01111001), ADDR_LO, IMP_D(1) }) \
+	FIRST(loop,    { LITERAL(11100010), ADDR_LO, IMP_D(1) }) \
+	FIRST(loopz,   { LITERAL(11100001), ADDR_LO, IMP_D(1) }) \
+	FIRST(loopnz,  { LITERAL(11100000), ADDR_LO, IMP_D(1) }) \
+	FIRST(jcxz,    { LITERAL(11100011), ADDR_LO, IMP_D(1) }) \
 
 #define ENCODINGS_NOOP(name, ...)
 
@@ -103,6 +133,7 @@ enum operand_type {
 	operand_register,
 	operand_memory,
 	operand_direct_address,
+	operand_relative_address,
 	operand_immediate,
 
 	operand_count,
@@ -138,6 +169,9 @@ struct operand {
 		struct direct_address_operand {
 			int16_t displacement;
 		} dir;
+		struct relative_address_operand {
+			int16_t displacement;
+		} rel;
 		struct immediate_operand {
 			int16_t value;
 		} imm;
@@ -145,6 +179,9 @@ struct operand {
 };
 
 struct instruction {
+	uint32_t at;
+	// TODO: probably should be bitmasks
+	uint8_t wide;
 	enum pneumonic op;
 	struct operand operands[MAX_OPERANDS];
 };
@@ -162,7 +199,9 @@ struct decoder_t {
 	uint32_t instructions_len;
 	struct instruction *instructions;
 
-	// TODO: labels?
+	uint32_t labels_curr;
+	uint32_t labels_cap;
+	uint32_t *labels;
 };
 struct decoder_t decoder;
 
@@ -245,6 +284,15 @@ void cleanup_and_exit(int exit_code) {
 }
 
 void print_instruction_disasm(struct instruction instr) {
+	//printf("instr.at=%d\n", instr.at);
+	for (uint32_t i = 0; i < decoder.labels_curr; i++) {
+		//printf("  label=%d\n", decoder.labels[i]);
+		if (instr.at == decoder.labels[i]) {
+			printf("label_%d:\n", i+1);
+			break;
+		}
+	}
+
 	printf("%s", pneumonic_strings[instr.op]);
 
 	uint8_t done = 0;
@@ -284,12 +332,22 @@ void print_instruction_disasm(struct instruction instr) {
 			case operand_direct_address:
 				printf("%s[%d]", sep, o.dir.displacement);
 				break;
+			case operand_relative_address:
+				printf("%s", sep);
+				for (uint32_t i = 0; i < decoder.labels_curr; i++) {
+					//printf("%d %d\n", instr.at+(int8_t)o.rel.displacement, decoder.labels[i]);
+					if (instr.at+(int8_t)o.rel.displacement+2 == decoder.labels[i]) {
+						printf("label_%d ; %d", i+1, o.rel.displacement);
+						break;
+					}
+				}
+				break;
 			case operand_immediate:
 				{
 					char *prefix = "";
-					uint16_t value = o.imm.value;
+					int16_t value = o.imm.value;
 					if (!seen_reg) {
-						if (value >> 8) {
+						if (instr.wide) {
 							prefix = "word ";
 						} else {
 							prefix = "byte ";
@@ -306,6 +364,7 @@ void print_instruction_disasm(struct instruction instr) {
 
 		sep = ", ";
 	}
+
 	printf("\n");
 }
 
@@ -338,6 +397,9 @@ void init_decoder(char *filename) {
 	decoder.instructions_len = 0;
 	decoder.instructions = malloc(
 			sizeof(struct instruction) * decoder.instructions_cap);
+	decoder.labels_curr = 0;
+	decoder.labels_cap = INITIAL_CAP;
+	decoder.labels = malloc(sizeof(uint32_t) * decoder.labels_cap);
 
 	// Read input file into memory
 	int c = fgetc(fp);
@@ -370,7 +432,7 @@ uint8_t decoder_next() {
 	__builtin_unreachable();
 }
 
-void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_table[bits_count], uint8_t bits_seen[bits_count]) {
+void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_table[bits_count], uint8_t bits_seen[bits_count], uint32_t first_byte_at) {
 	/*
 	printf("Matched %s!\n", pneumonic_strings[current_encoding.op]);
 	for (int j = 1; j < bits_count; j++) {
@@ -379,6 +441,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	*/
 
 	struct instruction instr = {
+		.at = first_byte_at,
 		.op = current_encoding.op,
 	};
 
@@ -392,6 +455,8 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	uint8_t disp_hi = bits_table[bits_disp_hi];
 	uint8_t data = bits_table[bits_data];
 	uint8_t data_if_w = bits_table[bits_data_if_w];
+
+	instr.wide = w;
 
 	struct operand reg_op, mod_op;
 
@@ -450,12 +515,42 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	}
 
 	if (bits_seen[bits_data]) {
+		int16_t value;
+
+		if (w) {
+			value = (uint16_t)(data_if_w << 8) | data;
+		} else {
+			value = (int8_t) data;
+		}
+
 		*free_op = (struct operand) {
 			.type = operand_immediate,
 				.imm = {
-					.value = (uint16_t)(data_if_w << 8) | data,
+					.value = value
 				},
 		};
+	} else if (bits_seen[bits_disp_lo] && !free_op->type) {
+		//printf("disp_lo=%d\n", (int8_t)disp_lo);
+		*free_op = (struct operand) {
+			.type = operand_relative_address,
+				.rel = {
+					.displacement = (int8_t)disp_lo,
+				},
+		};
+
+		uint8_t label_found = 0;
+		uint32_t loc = (uint32_t)instr.at + (int8_t)disp_lo + 2;
+		for (uint32_t i = 0; i < decoder.labels_curr; i++) {
+			if (decoder.labels[i] == loc) {
+				label_found = 1;
+				break;
+			}
+		}
+
+		if (!label_found) {
+			//printf("-- loc=%d, at=%d, disp_lo=%d, label=%d\n", (uint32_t)loc, instr.at, disp_lo, decoder.labels_curr);
+			decoder.labels[decoder.labels_curr++] = loc;
+		}
 	}
 
 	if (d) {
@@ -466,7 +561,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 		instr.operands[1] = reg_op;
 	}
 
-	print_instruction_disasm(instr);
+	//print_instruction_disasm(instr);
 
 	decoder.instructions[decoder.instructions_len++] = instr;
 
@@ -484,6 +579,7 @@ void decode() {
 
 		// Test all encodings to see if this matches
 		for (uint32_t i = 0; i < NUM_ENCODINGS; i++) {
+			//printf("%d | %d/%d\n", current_byte, i, NUM_ENCODINGS);
 			struct encoding current_encoding = encodings[i];
 
 			// Check first block
@@ -502,6 +598,7 @@ void decode() {
 			uint8_t bits_table[bits_count] = {0};
 			uint8_t bits_seen[bits_count] = {0};
 			uint32_t decoder_prev = decoder.bytes_curr;
+			uint8_t prev_byte = current_byte;
 
 			// Pull data out of rest of blocks
 			while ((++current_block)->type != bits_end) {
@@ -516,7 +613,7 @@ void decode() {
 					continue;
 				} else if (current_block->type == bits_disp_hi && !need_disp_hi) {
 					continue;
-				} else if (current_block->type == bits_data_if_w && (s || !w)) {
+				} else if (current_block->type == bits_data_if_w && (!(!s && w))) {
 					continue;
 				}
 
@@ -540,10 +637,12 @@ void decode() {
 				}
 
 				if ((current_block->type == bits_literal) &&
-						(bits_table[current_block->type] != current_block->value)) {
+						(bits_table[bits_literal] != current_block->value)) {
+					//printf("  %d = %d\n", bits_table[bits_literal], current_block->value);
 					// If this is a literal and the value does not line up
 					// this is not the encoding
 					decoder.bytes_curr = decoder_prev;
+					current_byte = prev_byte;
 					found = 0;
 					break;
 				}
@@ -554,7 +653,7 @@ void decode() {
 				continue;
 			}
 
-			build_and_store_instruction(current_encoding, bits_table, bits_seen);
+			build_and_store_instruction(current_encoding, bits_table, bits_seen, decoder_prev-1);
 			break;
 		}
 
