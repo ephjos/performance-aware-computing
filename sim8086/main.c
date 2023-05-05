@@ -35,16 +35,24 @@
 #define DISP_HI {bits_disp_hi, 8, 0}
 #define DATA {bits_data, 8, 0}
 #define DATA_IF_W {bits_data_if_w, 8, 0}
-#define ADDR_LO {bits_addr_lo, 8, 0}
-#define ADDR_HI {bits_addr_hi, 8, 0}
+#define ADDR_LO {bits_disp_lo_always, 0, 0}, {bits_disp_lo, 8, 0}
+#define ADDR_HI {bits_disp_hi_always, 0, 0}, {bits_disp_hi, 8, 0}
+#define IMP_D(v) {bits_d, 0, v}
+#define IMP_REG(v) {bits_reg, 0, v}
+#define IMP_MOD(v) {bits_mod, 0, v}
+#define IMP_RM(v) {bits_rm, 0, v}
 
 
 #define ENCODINGS(FIRST, DUPE) \
 	FIRST(mov, { LITERAL(100010), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
 	DUPE(mov, { LITERAL(1100011), W, MOD, LITERAL(000), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
-	DUPE(mov, { LITERAL(1011), W, REG, DATA, DATA_IF_W }) \
-	DUPE(mov, { LITERAL(1010000), W, ADDR_LO, ADDR_HI }) \
-	DUPE(mov, { LITERAL(1010001), W, ADDR_LO, ADDR_HI }) \
+	DUPE(mov, { LITERAL(1011), W, REG, DATA, DATA_IF_W, IMP_D(1) }) \
+	DUPE(mov, { LITERAL(1010000), W, ADDR_LO, ADDR_HI, IMP_REG(0), IMP_MOD(0), IMP_RM(0b110), IMP_D(1) }) \
+	DUPE(mov, { LITERAL(1010001), W, ADDR_LO, ADDR_HI, IMP_REG(0), IMP_MOD(0), IMP_RM(0b110), IMP_D(0) }) \
+	\
+	FIRST(add, { LITERAL(000000), D, W, MOD, REG, RM, DISP_LO, DISP_HI }) \
+	DUPE(add, { LITERAL(100000), S, W, MOD, LITERAL(000), RM, DISP_LO, DISP_HI, DATA, DATA_IF_W }) \
+	DUPE(add, { LITERAL(0000010), W, DATA, DATA_IF_W }) \
 
 #define ENCODINGS_NOOP(name, ...)
 
@@ -62,6 +70,8 @@
 	F(rm) \
 	F(disp_lo) \
 	F(disp_hi) \
+	F(disp_lo_always) \
+	F(disp_hi_always) \
 	F(data) \
 	F(data_if_w) \
 	F(addr_lo) \
@@ -238,6 +248,7 @@ void print_instruction_disasm(struct instruction instr) {
 	printf("%s", pneumonic_strings[instr.op]);
 
 	uint8_t done = 0;
+	uint8_t seen_reg = 0;
 	char *sep = " ";
 	for (int j = 0; j < MAX_OPERANDS; j++) {
 		struct operand o = instr.operands[j];
@@ -248,6 +259,7 @@ void print_instruction_disasm(struct instruction instr) {
 			case operand_count:
 				break;
 			case operand_register:
+				seen_reg = 1;
 				printf("%s%s", sep, REG_NAMES[o.reg.index][o.reg.offset][o.reg.width-1]);
 				break;
 			case operand_memory:
@@ -259,14 +271,13 @@ void print_instruction_disasm(struct instruction instr) {
 					struct register_operand second_reg = o.mem.effective_address[1];
 					if (second_reg.width) {
 						const char *second_reg_name = REG_NAMES[second_reg.index][second_reg.offset][second_reg.width-1];
-						printf("+%s",  second_reg_name);
+						printf(" + %s",  second_reg_name);
 					}
 
 					if (o.mem.displacement == 0) {
 						printf("]");
 					} else {
-						char plus_last = o.mem.displacement > 0 ? '+' : 0;
-						printf("%c%d]", plus_last, o.mem.displacement);
+						printf(" + %d]", o.mem.displacement);
 					}
 					break;
 				}
@@ -274,7 +285,18 @@ void print_instruction_disasm(struct instruction instr) {
 				printf("%s[%d]", sep, o.dir.displacement);
 				break;
 			case operand_immediate:
-				printf("%s%d", sep, o.imm.value);
+				{
+					char *prefix = "";
+					uint16_t value = o.imm.value;
+					if (!seen_reg) {
+						if (value >> 8) {
+							prefix = "word ";
+						} else {
+							prefix = "byte ";
+						}
+					}
+					printf("%s%s%d", sep, prefix, value);
+				}
 				break;
 		}
 
@@ -360,7 +382,6 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 		.op = current_encoding.op,
 	};
 
-	struct operand op1, op2;
 
 	uint8_t mod = bits_table[bits_mod];
 	uint8_t d = bits_table[bits_d];
@@ -372,81 +393,80 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	uint8_t data = bits_table[bits_data];
 	uint8_t data_if_w = bits_table[bits_data_if_w];
 
-	if (bits_seen[bits_mod]) {
-		// MOD formatted instruction
-		op1 = (struct operand){
+	struct operand reg_op, mod_op;
+
+	if (bits_seen[bits_reg]) {
+		reg_op = (struct operand) {
 			.type = operand_register,
-				.reg = W_RM_REG[w][reg]
+			.reg = W_RM_REG[w][reg],
 		};
+	}
 
+	if (bits_seen[bits_mod]) {
 		if (mod == 0b11) {
-			op2 = (struct operand){
+			mod_op = (struct operand) {
 				.type = operand_register,
-					.reg = W_RM_REG[w][rm]
+					.reg = W_RM_REG[w][rm],
 			};
-		} else if (mod == 0b10 || mod == 0b01 || (mod == 0b00 && rm != 0b110)) {
-			// 16-bit displacement
-			// 8-bit displacement
-
-			op2 = (struct operand){
+		} else if (mod == 0b00 && rm == 0b110) {
+			mod_op = (struct operand) {
+				.type = operand_direct_address,
+					.dir = {
+						.displacement = (int16_t)(disp_hi << 8) | disp_lo,
+					},
+			};
+		} else {
+			int16_t value;
+			if (bits_seen[bits_disp_hi]) {
+				value = (uint16_t)(disp_hi << 8) | disp_lo;
+			} else {
+				value = (int8_t)disp_lo;
+			}
+			mod_op = (struct operand){
 				.type = operand_memory,
 					.mem = {
 						.effective_address = { {0}, {0} },
-						.displacement = (uint16_t)(disp_hi << 8) | disp_lo,
+						.displacement = value,
 					},
 			};
 
 			switch (rm) {
-				case 0: { op2.mem.effective_address[0] = (struct register_operand)BX; op2.mem.effective_address[1] = (struct register_operand)SI; break; }
-				case 1: { op2.mem.effective_address[0] = (struct register_operand)BX; op2.mem.effective_address[1] = (struct register_operand)DI; break; }
-				case 2: { op2.mem.effective_address[0] = (struct register_operand)BP; op2.mem.effective_address[1] = (struct register_operand)SI; break; }
-				case 3: { op2.mem.effective_address[0] = (struct register_operand)BP; op2.mem.effective_address[1] = (struct register_operand)DI; break; }
-				case 4: { op2.mem.effective_address[0] = (struct register_operand)SI; break; }
-				case 5: { op2.mem.effective_address[0] = (struct register_operand)DI; break; }
-				case 6: { op2.mem.effective_address[0] = (struct register_operand)BP; break; }
-				case 7: { op2.mem.effective_address[0] = (struct register_operand)BX; break; }
+				case 0: { mod_op.mem.effective_address[0] = (struct register_operand)BX; mod_op.mem.effective_address[1] = (struct register_operand)SI; break; }
+				case 1: { mod_op.mem.effective_address[0] = (struct register_operand)BX; mod_op.mem.effective_address[1] = (struct register_operand)DI; break; }
+				case 2: { mod_op.mem.effective_address[0] = (struct register_operand)BP; mod_op.mem.effective_address[1] = (struct register_operand)SI; break; }
+				case 3: { mod_op.mem.effective_address[0] = (struct register_operand)BP; mod_op.mem.effective_address[1] = (struct register_operand)DI; break; }
+				case 4: { mod_op.mem.effective_address[0] = (struct register_operand)SI; break; }
+				case 5: { mod_op.mem.effective_address[0] = (struct register_operand)DI; break; }
+				case 6: { mod_op.mem.effective_address[0] = (struct register_operand)BP; break; }
+				case 7: { mod_op.mem.effective_address[0] = (struct register_operand)BX; break; }
 				default: break;
 			}
-
-		instr.operands[0] = op1;
-		instr.operands[1] = op2;
-
-		} else if (mod == 0b00 && rm == 0b110) {
-			// direct 16 bit address
-			op2 = (struct operand){
-				.type = operand_memory,
-					.dir = {
-						.displacement = (uint16_t)(disp_hi << 8) | disp_lo,
-					},
-			};
 		}
+	}
 
-		if (d) {
-			instr.operands[0] = op1;
-			instr.operands[1] = op2;
-		} else {
-			instr.operands[0] = op2;
-			instr.operands[1] = op1;
-		}
-	} else if (bits_seen[bits_reg]) {
-		// Single reg instruction
-		// TODO: HANDLE SINGLE REG
-		op1 = (struct operand){
-			.type = operand_register,
-				.reg = W_RM_REG[w][reg]
-		};
+	struct operand *free_op = &reg_op;
+	if (reg_op.type) {
+		free_op = &mod_op;
+	}
 
-		op2 = (struct operand){
+	if (bits_seen[bits_data]) {
+		*free_op = (struct operand) {
 			.type = operand_immediate,
 				.imm = {
 					.value = (uint16_t)(data_if_w << 8) | data,
 				},
 		};
-
-		instr.operands[0] = op1;
-		instr.operands[1] = op2;
 	}
-		//print_instruction_disasm(instr);
+
+	if (d) {
+		instr.operands[0] = reg_op;
+		instr.operands[1] = mod_op;
+	} else {
+		instr.operands[0] = mod_op;
+		instr.operands[1] = reg_op;
+	}
+
+	print_instruction_disasm(instr);
 
 	decoder.instructions[decoder.instructions_len++] = instr;
 
@@ -485,22 +505,23 @@ void decode() {
 
 			// Pull data out of rest of blocks
 			while ((++current_block)->type != bits_end) {
+				uint8_t s = bits_table[bits_s];
 				uint8_t w = bits_table[bits_w];
 				uint8_t mod = bits_table[bits_mod];
 				uint8_t rm = bits_table[bits_rm];
-				uint8_t need_disp_lo = bits_seen[bits_mod] && ((mod == 0b01) || (mod == 0b10) || (mod == 0b00 && rm == 0b110));
-				uint8_t need_disp_hi= bits_seen[bits_mod] && ((mod == 0b10) || (mod == 0b00 && rm == 0b110));
+				uint8_t need_disp_lo = (bits_seen[bits_mod] && ((mod == 0b01) || (mod == 0b10) || (mod == 0b00 && rm == 0b110))) || bits_seen[bits_disp_lo_always];
+				uint8_t need_disp_hi= (bits_seen[bits_mod] && ((mod == 0b10) || (mod == 0b00 && rm == 0b110))) || bits_seen[bits_disp_hi_always];
 
 				if (current_block->type == bits_disp_lo && !need_disp_lo) {
 					continue;
 				} else if (current_block->type == bits_disp_hi && !need_disp_hi) {
 					continue;
-				} else if (current_block->type == bits_data_if_w && !w) {
+				} else if (current_block->type == bits_data_if_w && (s || !w)) {
 					continue;
 				}
 
 				// Take bits
-				if (shift == 0) {
+				if (current_block->size > 0 && shift == 0) {
 					shift = 8;
 					current_byte = decoder_next();
 				}
