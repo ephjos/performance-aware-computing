@@ -3,3 +3,4 @@ temp
 temp*
 gmon.out
 sim8086
+*.data

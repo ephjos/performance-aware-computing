@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // ============================================================================
 // Macros
@@ -191,11 +192,13 @@ struct instruction {
 };
 
 struct binary_args {
-	uint16_t *dest;
-	uint16_t dest_value;
-	uint16_t mask;
-	uint16_t shift;
-	uint16_t value;
+	uint8_t *high_dest;
+	uint8_t *low_dest;
+	uint8_t shift;
+	uint8_t high_current;
+	uint8_t low_current;
+	uint8_t high_value;
+	uint8_t low_value;
 };
 
 struct decoder_t {
@@ -221,6 +224,7 @@ struct cpu_state_t {
 	uint16_t registers[8];
 	uint32_t ip;
 	uint16_t flags;
+	uint8_t memory[65536];
 } cpu_state;
 
 // ============================================================================
@@ -724,51 +728,97 @@ void verify_encodings() {
 	}
 }
 
-struct binary_args get_binary_args(struct instruction instr) {
-	assert(instr.operands_len == 2);
-
-	struct binary_args res;
-
-	struct operand left = instr.operands[0];
-	switch (left.type) {
-		case operand_register:
-			res.dest = &cpu_state.registers[left.reg.index];
-			if (left.reg.width == 2) {
-				res.mask = 0xFFFF;
-			} else {
-				if (left.reg.offset) {
-					res.mask = 0xFF00;
-					res.shift = 8;
-				} else {
-					res.mask = 0x00FF;
-				}
-			}
-			res.dest_value = (uint16_t)((*res.dest & res.mask) >> res.shift);
-			break;
-		default:
-			fprintf(stderr, "left operand %d not supported yet\n", left.type);
-			cleanup_and_exit(101);
-			break;
-	}
-
-	struct operand right = instr.operands[1];
-	switch (right.type) {
-		case operand_immediate:
-			res.value = right.imm.value;
-			break;
-		case operand_register:
-			res.value = (uint16_t)(cpu_state.registers[right.reg.index] << (right.reg.offset * 8));
-			break;
-		default:
-			fprintf(stderr, "right operand %d not supported yet\n", right.type);
-			cleanup_and_exit(102);
-			break;
-	}
-
+uint16_t impl_op_mov(struct instruction instr, uint16_t a, uint16_t b) {
+	uint16_t res = b;
+	cpu_state.flags = (((res & 0x8000)>0) * FLAGS_S) | ((res == 0) * FLAGS_Z);
 	return res;
 }
+uint16_t impl_op_add(struct instruction instr, uint16_t a, uint16_t b) {
+	uint16_t res = a+b;
+	cpu_state.flags = (((res & 0x8000)>0) * FLAGS_S) | ((res == 0) * FLAGS_Z);
+	return res;
+}
+uint16_t impl_op_sub(struct instruction instr, uint16_t a, uint16_t b) {
+	uint16_t res = a-b;
+	cpu_state.flags = (((res & 0x8000)>0) * FLAGS_S) | ((res == 0) * FLAGS_Z);
+	return res;
+}
+uint16_t impl_op_cmp(struct instruction instr, uint16_t a, uint16_t b) {
+	uint16_t res = a-b;
+	cpu_state.flags = (((res & 0x8000)>0) * FLAGS_S) | ((res == 0) * FLAGS_Z);
+	return a;
+}
+uint16_t impl_op_je(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jl(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jle(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jb(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jbe(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jp(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jo(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_js(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jne(struct instruction instr, uint16_t a, uint16_t b) {
+	if (!(cpu_state.flags & FLAGS_Z)) {
+		cpu_state.ip += (int16_t)b;
+	}
+	return 0;
+}
+uint16_t impl_op_jnl(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jnle(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jnb(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jnbe(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jnp(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jno(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jns(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_loop(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_loopz(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_loopnz(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+uint16_t impl_op_jcxz(struct instruction instr, uint16_t a, uint16_t b) {
+	return 0;
+}
+
+#define ENCODING_TO_IMPL_FUNC(name, ...) impl_op_##name,
+uint16_t (*op_impls[op_count])(struct instruction, uint16_t, uint16_t) = {
+	ENCODINGS(ENCODING_TO_IMPL_FUNC, ENCODINGS_NOOP)
+};
 
 void execute() {
+
 	while (1) {
 		uint8_t instr_found = 0;
 		struct instruction instr;
@@ -787,53 +837,146 @@ void execute() {
 
 		cpu_state.ip += instr.len;
 
-		switch (instr.op) {
-			case op_mov:
+		switch (instr.operands_len) {
+			case 2:
 				{
-					struct binary_args args = get_binary_args(instr);
-					*args.dest &= !args.mask;
-					*args.dest |= (uint16_t)((args.value << args.shift) & args.mask);
-					break;
-				}
-			case op_add:
-				{
-					struct binary_args args = get_binary_args(instr);
-					*args.dest &= !args.mask;
-					uint16_t new_value = (args.dest_value + args.value);
-					*args.dest |= (uint16_t)((new_value << args.shift) & args.mask);
+					uint16_t value;
+					struct operand a = instr.operands[0];
+					struct operand b = instr.operands[1];
 
-					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
-					break;
-				}
-			case op_sub:
-				{
-					struct binary_args args = get_binary_args(instr);
-					*args.dest &= !args.mask;
-					uint16_t new_value = (args.dest_value - args.value);
-					*args.dest |= (uint16_t)((new_value << args.shift) & args.mask);
+					switch (b.type) {
+						case operand_immediate:
+							value = b.imm.value;
+							break;
+						case operand_register:
+							if (instr.wide) {
+								value = cpu_state.registers[b.reg.index];
+							} else {
+								if (b.reg.offset) {
+									value = (uint8_t)(cpu_state.registers[b.reg.index] >> 8);
+								} else {
+									value = (uint8_t)(cpu_state.registers[b.reg.index]);
+								}
+							}
+							break;
+						case operand_memory:
+							{
+								uint32_t addr = b.mem.displacement;
+								struct register_operand ar = b.mem.effective_address[0];
+								if (ar.width) {
+									addr += cpu_state.registers[ar.index] >> ar.offset;
+								}
 
-					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
-					break;
-				}
-			case op_cmp:
-				{
-					struct binary_args args = get_binary_args(instr);
-					uint16_t new_value = (args.dest_value - args.value);
+								struct register_operand br = b.mem.effective_address[1];
+								if (br.width) {
+									addr += cpu_state.registers[br.index] >> br.offset;
+								}
 
-					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
+								if (instr.wide) {
+									value = (uint16_t)(cpu_state.memory[addr+1] << 8) | cpu_state.memory[addr];
+								} else {
+									value = (uint8_t)cpu_state.memory[addr];
+								}
+								break;
+							}
+						case operand_direct_address:
+							{
+								if (instr.wide) {
+									value = cpu_state.memory[b.dir.displacement];
+								} else {
+									value = (uint8_t)cpu_state.memory[b.dir.displacement];
+								}
+								break;
+							}
+						default:
+							fprintf(stderr, "b operands with type %d not supported yet\n", b.type);
+							cleanup_and_exit(107);
+							break;
+					}
+
+					switch (a.type) {
+						case operand_register:
+							if (instr.wide) {
+								uint16_t current_value = cpu_state.registers[a.reg.index];
+								uint16_t new_value = op_impls[instr.op](instr, current_value, value);
+								cpu_state.registers[a.reg.index] = new_value;
+							} else {
+								uint8_t current_value;
+								if (a.reg.offset) {
+									current_value = (uint8_t)(cpu_state.registers[a.reg.index] >> 8);
+								} else {
+									current_value = (uint8_t)(cpu_state.registers[a.reg.index]);
+								}
+
+								uint8_t new_value = (uint8_t)op_impls[instr.op](instr, current_value, value);
+
+								if (a.reg.offset) {
+									cpu_state.registers[a.reg.index] &= 0x00FF;
+									cpu_state.registers[a.reg.index] |= (uint16_t)(new_value << 8);
+								} else {
+									cpu_state.registers[a.reg.index] &= 0xFF00;
+									cpu_state.registers[a.reg.index] |= new_value;
+								}
+							}
+							break;
+						case operand_memory:
+							{
+								uint32_t addr = a.mem.displacement;
+								struct register_operand ar = a.mem.effective_address[0];
+								if (ar.width) {
+									addr += cpu_state.registers[ar.index] >> ar.offset;
+								}
+
+								struct register_operand br = a.mem.effective_address[1];
+								if (br.width) {
+									addr += cpu_state.registers[br.index] >> br.offset;
+								}
+
+								if (instr.wide) {
+									cpu_state.memory[addr] = (uint8_t)value;
+									cpu_state.memory[addr+1] = (uint8_t)(value >> 8);
+								} else {
+									cpu_state.memory[addr] = (uint8_t)value;
+								}
+								break;
+							}
+						case operand_direct_address:
+							{
+								uint32_t addr = a.dir.displacement;
+								if (instr.wide) {
+									cpu_state.memory[addr] = (uint8_t)value;
+									cpu_state.memory[addr+1] = (uint8_t)(value >> 8);
+								} else {
+									cpu_state.memory[addr] = (uint8_t)value;
+								}
+								break;
+							}
+						default:
+							fprintf(stderr, "a operands with type %d not supported yet\n", a.type);
+							cleanup_and_exit(108);
+							break;
+					}
 					break;
 				}
-			case op_jne:
-				if (!(cpu_state.flags & FLAGS_Z)) {
-					cpu_state.ip += instr.operands[0].rel.displacement;
+			case 1:
+				{
+					struct operand a = instr.operands[0];
+
+					switch (a.type) {
+						case operand_relative_address:
+							op_impls[instr.op](instr, 0, a.rel.displacement);
+							break;
+						default:
+							break;
+					}
+
+					break;
 				}
-				break;
 			default:
-				fprintf(stderr, "operation %s not implemented yet\n", pneumonic_strings[instr.op]);
+				fprintf(stderr, "operations with %d operands not supported yet\n", instr.operands_len);
 				cleanup_and_exit(103);
 				break;
 		}
-
 	}
 
 	fprintf(stderr, "\nFinal Registers:\n");
@@ -844,6 +987,20 @@ void execute() {
 	fprintf(stderr, "\n    ip: 0x%04X\n", cpu_state.ip);
 	fprintf(stderr, "  flags: S=%d Z=%d\n", (cpu_state.flags & FLAGS_S) > 0, (cpu_state.flags & FLAGS_Z) > 0);
 
+}
+
+void dump_memory() {
+	FILE *fp = fopen("./memory.data", "w+");
+	if (fp == NULL) {
+		fprintf(stderr, "Could not write memory.data\n");
+		return;
+	}
+
+	for (int i = 0; i < 65536; i++) {
+		fputc(cpu_state.memory[i], fp);
+	}
+
+	fclose(fp);
 }
 
 // ============================================================================
@@ -870,6 +1027,9 @@ int main(int argc, char *argv[]) {
 	print_disasm();
 	if (should_execute) {
 		execute();
+		if (strstr(argv[filename_index], "draw") != NULL) {
+			dump_memory();
+		}
 	}
 	cleanup_and_exit(0);
 }
