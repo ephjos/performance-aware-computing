@@ -182,6 +182,7 @@ struct operand {
 
 struct instruction {
 	uint32_t at;
+	uint32_t len;
 	// TODO: probably should be bitmasks
 	uint8_t wide;
 	enum pneumonic op;
@@ -218,6 +219,7 @@ struct decoder_t decoder;
 
 struct cpu_state_t {
 	uint16_t registers[8];
+	uint32_t ip;
 	uint16_t flags;
 } cpu_state;
 
@@ -243,7 +245,7 @@ const struct encoding encodings[] = {
 const uint32_t NUM_ENCODINGS = sizeof(encodings) / sizeof(encodings[0]);
 
 // Given a register (index, offset, width) = REG_NAMES[index][offset][width-1]
-const char *REG_NAMES[13][2][2] = {
+const char *REG_NAMES[8][2][2] = {
  { {"al", "ax"}, {"ah"} },
  { {"bl", "bx"}, {"bh"} },
  { {"cl", "cx"}, {"ch"} },
@@ -252,11 +254,6 @@ const char *REG_NAMES[13][2][2] = {
  { {0, "bp"}, {0} },
  { {0, "si"}, {0} },
  { {0, "di"}, {0} },
- { {0, "cs"}, {0} },
- { {0, "ds"}, {0} },
- { {0, "ss"}, {0} },
- { {0, "es"}, {0} },
- { {0, "ip"}, {0} },
 };
 
 #define AL {0,  0, 1}
@@ -436,6 +433,8 @@ void init(char *filename) {
 	// Initialize cpu_state
 	cpu_state = (struct cpu_state_t) {
 		.registers = { 0 },
+			.ip = 0,
+			.flags = 0,
 	};
 }
 
@@ -456,6 +455,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 	// Initialize instruction
 	struct instruction instr = {
 		.at = first_byte_at,
+		.len = decoder.bytes_curr - first_byte_at,
 		.op = current_encoding.op,
 	};
 
@@ -769,8 +769,23 @@ struct binary_args get_binary_args(struct instruction instr) {
 }
 
 void execute() {
-	for (uint32_t i = 0; i < decoder.instructions_len; i++) {
-		struct instruction instr = decoder.instructions[i];
+	while (1) {
+		uint8_t instr_found = 0;
+		struct instruction instr;
+		// TODO: binary search?
+		for (uint32_t i = 0; i < decoder.instructions_len; i++) {
+			instr = decoder.instructions[i];
+			if (instr.at == cpu_state.ip) {
+				instr_found = 1;
+				break;
+			}
+		}
+
+		if (!instr_found) {
+			break;
+		}
+
+		cpu_state.ip += instr.len;
 
 		switch (instr.op) {
 			case op_mov:
@@ -808,19 +823,26 @@ void execute() {
 					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
 					break;
 				}
+			case op_jne:
+				if (!(cpu_state.flags & FLAGS_Z)) {
+					cpu_state.ip += instr.operands[0].rel.displacement;
+				}
+				break;
 			default:
 				fprintf(stderr, "operation %s not implemented yet\n", pneumonic_strings[instr.op]);
 				cleanup_and_exit(103);
 				break;
 		}
+
 	}
 
 	fprintf(stderr, "\nFinal Registers:\n");
 	for (int i = 0; i < 8; i++) {
-		fprintf(stderr, "  %s: 0x%04X\n", REG_NAMES[i][0][1], cpu_state.registers[i]);
+		fprintf(stderr, "    %s: 0x%04X\n", REG_NAMES[i][0][1], cpu_state.registers[i]);
 	}
 	//fprintf(stderr, " flags: 0x%04X %d\n", cpu_state.flags, cpu_state.flags);
-	fprintf(stderr, " flags: S=%d Z=%d\n", (cpu_state.flags & FLAGS_S) > 0, (cpu_state.flags & FLAGS_Z) > 0);
+	fprintf(stderr, "\n    ip: 0x%04X\n", cpu_state.ip);
+	fprintf(stderr, "  flags: S=%d Z=%d\n", (cpu_state.flags & FLAGS_S) > 0, (cpu_state.flags & FLAGS_Z) > 0);
 
 }
 
