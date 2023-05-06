@@ -20,6 +20,9 @@
 #define MAX_BLOCKS 16
 #define INITIAL_CAP 512
 
+#define FLAGS_S 0b0000000010000000
+#define FLAGS_Z 0b0000000001000000
+
 // ============================================================================
 // Encodings macros + table
 // ============================================================================
@@ -188,6 +191,7 @@ struct instruction {
 
 struct binary_args {
 	uint16_t *dest;
+	uint16_t dest_value;
 	uint16_t mask;
 	uint16_t shift;
 	uint16_t value;
@@ -214,6 +218,7 @@ struct decoder_t decoder;
 
 struct cpu_state_t {
 	uint16_t registers[8];
+	uint16_t flags;
 } cpu_state;
 
 // ============================================================================
@@ -738,6 +743,7 @@ struct binary_args get_binary_args(struct instruction instr) {
 					res.mask = 0x00FF;
 				}
 			}
+			res.dest_value = (uint16_t)((*res.dest & res.mask) >> res.shift);
 			break;
 		default:
 			fprintf(stderr, "left operand %d not supported yet\n", left.type);
@@ -770,12 +776,36 @@ void execute() {
 			case op_mov:
 				{
 					struct binary_args args = get_binary_args(instr);
-					if (instr.wide) {
-						*args.dest = args.value;
-					} else {
-						*args.dest &= !args.mask;
-						*args.dest |= (uint16_t)((args.value << args.shift) & args.mask);
-					}
+					*args.dest &= !args.mask;
+					*args.dest |= (uint16_t)((args.value << args.shift) & args.mask);
+					break;
+				}
+			case op_add:
+				{
+					struct binary_args args = get_binary_args(instr);
+					*args.dest &= !args.mask;
+					uint16_t new_value = (args.dest_value + args.value);
+					*args.dest |= (uint16_t)((new_value << args.shift) & args.mask);
+
+					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
+					break;
+				}
+			case op_sub:
+				{
+					struct binary_args args = get_binary_args(instr);
+					*args.dest &= !args.mask;
+					uint16_t new_value = (args.dest_value - args.value);
+					*args.dest |= (uint16_t)((new_value << args.shift) & args.mask);
+
+					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
+					break;
+				}
+			case op_cmp:
+				{
+					struct binary_args args = get_binary_args(instr);
+					uint16_t new_value = (args.dest_value - args.value);
+
+					cpu_state.flags = (((new_value & 0x8000)>0) * FLAGS_S) | ((new_value == 0) * FLAGS_Z);
 					break;
 				}
 			default:
@@ -789,6 +819,8 @@ void execute() {
 	for (int i = 0; i < 8; i++) {
 		fprintf(stderr, "  %s: 0x%04X\n", REG_NAMES[i][0][1], cpu_state.registers[i]);
 	}
+	//fprintf(stderr, " flags: 0x%04X %d\n", cpu_state.flags, cpu_state.flags);
+	fprintf(stderr, " flags: S=%d Z=%d\n", (cpu_state.flags & FLAGS_S) > 0, (cpu_state.flags & FLAGS_Z) > 0);
 
 }
 
