@@ -7,6 +7,7 @@
 // Joe Hines - April 2023
 //
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,7 +78,6 @@
 	FIRST(jnbe, { LITERAL(01110111), ADDR_LO, IMP_D(1) }) \
 	FIRST(jnp,  { LITERAL(01111011), ADDR_LO, IMP_D(1) }) \
 	FIRST(jno,  { LITERAL(01110001), ADDR_LO, IMP_D(1) }) \
-	\
 	FIRST(jns,     { LITERAL(01111001), ADDR_LO, IMP_D(1) }) \
 	FIRST(loop,    { LITERAL(11100010), ADDR_LO, IMP_D(1) }) \
 	FIRST(loopz,   { LITERAL(11100001), ADDR_LO, IMP_D(1) }) \
@@ -87,7 +87,7 @@
 #define ENCODINGS_NOOP(name, ...)
 
 // ============================================================================
-// Bits macros + table
+// Bits table
 // ============================================================================
 
 #define BITS(F) \
@@ -106,7 +106,6 @@
 	F(data_if_w) \
 	F(addr_lo) \
 	F(addr_hi) \
-
 
 // ============================================================================
 // Enums
@@ -183,7 +182,15 @@ struct instruction {
 	// TODO: probably should be bitmasks
 	uint8_t wide;
 	enum pneumonic op;
+	uint8_t operands_len;
 	struct operand operands[MAX_OPERANDS];
+};
+
+struct binary_args {
+	uint16_t *dest;
+	uint16_t mask;
+	uint16_t shift;
+	uint16_t value;
 };
 
 struct decoder_t {
@@ -205,6 +212,9 @@ struct decoder_t {
 };
 struct decoder_t decoder;
 
+struct cpu_state_t {
+	uint16_t registers[8];
+} cpu_state;
 
 // ============================================================================
 // Constants
@@ -276,34 +286,26 @@ const struct register_operand W_RM_REG[2][8] = {
 // Functions
 // ============================================================================
 
-// TODO: trap for this?
-void cleanup_and_exit(int exit_code) {
-	free(decoder.bytes);
-	free(decoder.instructions);
-	exit(exit_code);
-}
-
 void print_instruction_disasm(struct instruction instr) {
-	//printf("instr.at=%d\n", instr.at);
+	// If there is a label at the current byte, print it out before
+	// printing the instruction
 	for (uint32_t i = 0; i < decoder.labels_curr; i++) {
-		//printf("  label=%d\n", decoder.labels[i]);
 		if (instr.at == decoder.labels[i]) {
 			printf("label_%d:\n", i+1);
 			break;
 		}
 	}
 
+	// Print pneumonic
 	printf("%s", pneumonic_strings[instr.op]);
 
-	uint8_t done = 0;
+	// Print out each operand
 	uint8_t seen_reg = 0;
 	char *sep = " ";
-	for (int j = 0; j < MAX_OPERANDS; j++) {
+	for (int j = 0; j < instr.operands_len; j++) {
 		struct operand o = instr.operands[j];
 		switch (o.type) {
 			case operand_end:
-				done = 1;
-				break;
 			case operand_count:
 				break;
 			case operand_register:
@@ -335,7 +337,6 @@ void print_instruction_disasm(struct instruction instr) {
 			case operand_relative_address:
 				printf("%s", sep);
 				for (uint32_t i = 0; i < decoder.labels_curr; i++) {
-					//printf("%d %d\n", instr.at+(int8_t)o.rel.displacement, decoder.labels[i]);
 					if (instr.at+(int8_t)o.rel.displacement+2 == decoder.labels[i]) {
 						printf("label_%d ; %d", i+1, o.rel.displacement);
 						break;
@@ -358,10 +359,6 @@ void print_instruction_disasm(struct instruction instr) {
 				break;
 		}
 
-		if (done) {
-			break;
-		}
-
 		sep = ", ";
 	}
 
@@ -369,14 +366,26 @@ void print_instruction_disasm(struct instruction instr) {
 }
 
 void print_disasm() {
+	// Print header
 	printf("; %s\nbits 16\n\n", decoder.filename);
 
+	// Print each instruction
 	for (uint32_t i = 0; i < decoder.instructions_len; i++) {
 		print_instruction_disasm(decoder.instructions[i]);
 	}
 }
 
-void init_decoder(char *filename) {
+// TODO: trap for this?
+void cleanup_and_exit(int exit_code) {
+	if (exit_code != 0 && exit_code < 100) {
+		print_disasm();
+	}
+	free(decoder.bytes);
+	free(decoder.instructions);
+	exit(exit_code);
+}
+
+void init(char *filename) {
 	decoder.filename = filename;
 
 	// Init state and open input file.
@@ -418,10 +427,16 @@ void init_decoder(char *filename) {
 	decoder.bytes = realloc(decoder.bytes, decoder.bytes_len);
 
 	fclose(fp);
+
+	// Initialize cpu_state
+	cpu_state = (struct cpu_state_t) {
+		.registers = { 0 },
+	};
 }
 
 uint8_t decoder_next() {
-	//printf("decoder loc %d\n", decoder.bytes_curr);
+	// Get the next byte if in bounds, throwing a clear error and cleaning up
+	// if out of bounds
 	if (decoder.bytes_curr < decoder.bytes_len) {
 		return decoder.bytes[decoder.bytes_curr++];
 	}
@@ -433,19 +448,13 @@ uint8_t decoder_next() {
 }
 
 void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_table[bits_count], uint8_t bits_seen[bits_count], uint32_t first_byte_at) {
-	/*
-	printf("Matched %s!\n", pneumonic_strings[current_encoding.op]);
-	for (int j = 1; j < bits_count; j++) {
-		printf("  %s=%d (%d)\n", bits_strings[j], bits_table[j], bits_seen[j]);
-	}
-	*/
-
+	// Initialize instruction
 	struct instruction instr = {
 		.at = first_byte_at,
 		.op = current_encoding.op,
 	};
 
-
+	// Fields
 	uint8_t mod = bits_table[bits_mod];
 	uint8_t d = bits_table[bits_d];
 	uint8_t w = bits_table[bits_w];
@@ -458,6 +467,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 
 	instr.wide = w;
 
+	// Initialze ops
 	struct operand reg_op, mod_op;
 
 	if (bits_seen[bits_reg]) {
@@ -509,6 +519,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 		}
 	}
 
+	// Get the first unassigned operand
 	struct operand *free_op = &reg_op;
 	if (reg_op.type) {
 		free_op = &mod_op;
@@ -530,7 +541,7 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 				},
 		};
 	} else if (bits_seen[bits_disp_lo] && !free_op->type) {
-		//printf("disp_lo=%d\n", (int8_t)disp_lo);
+		// We have a displacement and no other operands, this is a jump
 		*free_op = (struct operand) {
 			.type = operand_relative_address,
 				.rel = {
@@ -547,12 +558,13 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 			}
 		}
 
+		// If this label is not currently known, save it
 		if (!label_found) {
-			//printf("-- loc=%d, at=%d, disp_lo=%d, label=%d\n", (uint32_t)loc, instr.at, disp_lo, decoder.labels_curr);
 			decoder.labels[decoder.labels_curr++] = loc;
 		}
 	}
 
+	// Swap operands to correct place
 	if (d) {
 		instr.operands[0] = reg_op;
 		instr.operands[1] = mod_op;
@@ -561,8 +573,16 @@ void build_and_store_instruction(struct encoding current_encoding, uint8_t bits_
 		instr.operands[1] = reg_op;
 	}
 
+	// Set operands_len
+	for (instr.operands_len = 0; instr.operands_len < MAX_OPERANDS; instr.operands_len++) {
+		if (instr.operands[instr.operands_len].type == operand_end) {
+			break;
+		}
+	}
+
 	//print_instruction_disasm(instr);
 
+	// Save instruction
 	decoder.instructions[decoder.instructions_len++] = instr;
 
 	// Expand capacity if needed
@@ -638,7 +658,6 @@ void decode() {
 
 				if ((current_block->type == bits_literal) &&
 						(bits_table[bits_literal] != current_block->value)) {
-					//printf("  %d = %d\n", bits_table[bits_literal], current_block->value);
 					// If this is a literal and the value does not line up
 					// this is not the encoding
 					decoder.bytes_curr = decoder_prev;
@@ -700,20 +719,103 @@ void verify_encodings() {
 	}
 }
 
+struct binary_args get_binary_args(struct instruction instr) {
+	assert(instr.operands_len == 2);
+
+	struct binary_args res;
+
+	struct operand left = instr.operands[0];
+	switch (left.type) {
+		case operand_register:
+			res.dest = &cpu_state.registers[left.reg.index];
+			if (left.reg.width == 2) {
+				res.mask = 0xFFFF;
+			} else {
+				if (left.reg.offset) {
+					res.mask = 0xFF00;
+					res.shift = 8;
+				} else {
+					res.mask = 0x00FF;
+				}
+			}
+			break;
+		default:
+			fprintf(stderr, "left operand %d not supported yet\n", left.type);
+			cleanup_and_exit(101);
+			break;
+	}
+
+	struct operand right = instr.operands[1];
+	switch (right.type) {
+		case operand_immediate:
+			res.value = right.imm.value;
+			break;
+		case operand_register:
+			res.value = (uint16_t)(cpu_state.registers[right.reg.index] << (right.reg.offset * 8));
+			break;
+		default:
+			fprintf(stderr, "right operand %d not supported yet\n", right.type);
+			cleanup_and_exit(102);
+			break;
+	}
+
+	return res;
+}
+
+void execute() {
+	for (uint32_t i = 0; i < decoder.instructions_len; i++) {
+		struct instruction instr = decoder.instructions[i];
+
+		switch (instr.op) {
+			case op_mov:
+				{
+					struct binary_args args = get_binary_args(instr);
+					if (instr.wide) {
+						*args.dest = args.value;
+					} else {
+						*args.dest &= !args.mask;
+						*args.dest |= (uint16_t)((args.value << args.shift) & args.mask);
+					}
+					break;
+				}
+			default:
+				fprintf(stderr, "operation %s not implemented yet\n", pneumonic_strings[instr.op]);
+				cleanup_and_exit(103);
+				break;
+		}
+	}
+
+	fprintf(stderr, "\nFinal Registers:\n");
+	for (int i = 0; i < 8; i++) {
+		fprintf(stderr, "  %s: 0x%04X\n", REG_NAMES[i][0][1], cpu_state.registers[i]);
+	}
+
+}
+
 // ============================================================================
 // Entrypoint
 // ============================================================================
 int main(int argc, char *argv[]) {
 	// "Parse" args
-	if (argc != 2) {
-		printf("USAGE: sim8086 FILENAME\n");
+	if (argc < 2) {
+		printf("USAGE: sim8086 [-e] FILENAME\n");
 		return 1;
+	}
+
+	int filename_index = 1;
+	int should_execute = 0;
+	if (argv[1][0] == '-' && argv[1][1] == 'e') {
+		filename_index = 2;
+		should_execute = 1;
 	}
 
 	verify_encodings();
 
-	init_decoder(argv[1]);
+	init(argv[filename_index]);
 	decode();
 	print_disasm();
+	if (should_execute) {
+		execute();
+	}
 	cleanup_and_exit(0);
 }

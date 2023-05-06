@@ -2,4 +2,4 @@
 
 set -euo pipefail
 
-make && ./sim8086 $1
+make && ./sim8086 $@
