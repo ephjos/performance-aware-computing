@@ -817,8 +817,46 @@ uint16_t (*op_impls[op_count])(struct instruction, uint16_t, uint16_t) = {
 	ENCODINGS(ENCODING_TO_IMPL_FUNC, ENCODINGS_NOOP)
 };
 
-void execute() {
+uint32_t get_ea_cycles(struct operand op) {
+	if (op.type == operand_direct_address) {
+		return 6;
+	}
 
+	assert(op.type == operand_memory);
+
+	struct register_operand base_reg = op.mem.effective_address[0];
+	struct register_operand index_reg = op.mem.effective_address[1];
+
+	uint8_t base = base_reg.width;
+	uint8_t index = index_reg.width;
+	uint32_t displacement = op.mem.displacement;
+
+	if (displacement && base && index) {
+		if ((base_reg.index == 5 && index_reg.index == 7) ||
+				(base_reg.index == 1 && index_reg.index == 6)) {
+			return 11;
+		} else {
+			return 12;
+		}
+	} else if (base && index) {
+		if ((base_reg.index == 5 && index_reg.index == 7) ||
+				(base_reg.index == 1 && index_reg.index == 6)) {
+			return 7;
+		} else {
+			return 8;
+		}
+	} else if (displacement && (base || index)) {
+		return 9;
+	} else if (base || index) {
+		return 5;
+	} else if (displacement) {
+		return 6;
+	}
+	return 0;
+}
+
+void execute() {
+	uint32_t cycles = 0;
 	while (1) {
 		uint8_t instr_found = 0;
 		struct instruction instr;
@@ -836,6 +874,7 @@ void execute() {
 		}
 
 		cpu_state.ip += instr.len;
+		uint8_t jump_taken = 0;
 
 		switch (instr.operands_len) {
 			case 2:
@@ -965,6 +1004,7 @@ void execute() {
 					switch (a.type) {
 						case operand_relative_address:
 							op_impls[instr.op](instr, 0, a.rel.displacement);
+							jump_taken = 1;
 							break;
 						default:
 							break;
@@ -977,6 +1017,139 @@ void execute() {
 				cleanup_and_exit(103);
 				break;
 		}
+
+		// Calc cycles
+		switch (instr.op) {
+			case op_mov:
+				{
+					struct operand a = instr.operands[0];
+					struct operand b = instr.operands[1];
+					if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_register && b.reg.index == 0) {
+						// memory accumulator
+						cycles += 10;
+					} else if (a.type == operand_register && a.reg.index == 0 && (b.type == operand_memory || b.type == operand_direct_address)) {
+						// accumulator memory
+						cycles += 10;
+					} else if (a.type == operand_register && b.type == operand_register) {
+						// register register
+						cycles += 2;
+					} else if (a.type == operand_register && (b.type == operand_memory || b.type == operand_direct_address)) {
+						// register memory (EA)
+						cycles += 8 + get_ea_cycles(b);
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_register) {
+						// memory register (EA)
+						cycles += 9 + get_ea_cycles(a);
+					} else if (a.type == operand_register && b.type == operand_immediate) {
+						// register immediate
+						cycles += 4;
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_immediate) {
+						// memory immediate (EA)
+						cycles += 10 + get_ea_cycles(a);
+					}
+					// TODO: log can't get cycles?
+					break;
+				}
+			case op_add:
+			case op_sub:
+				{
+					struct operand a = instr.operands[0];
+					struct operand b = instr.operands[1];
+					if (a.type == operand_register && b.type == operand_register) {
+						// register register
+						cycles += 3;
+					} else if (a.type == operand_register && (b.type == operand_memory || b.type == operand_direct_address)) {
+						// register memory (EA)
+						cycles += 9 + get_ea_cycles(b);
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_register) {
+						// memory register (EA)
+						cycles += 16 + get_ea_cycles(a);
+					} else if (a.type == operand_register && b.type == operand_immediate) {
+						// register immediate
+						cycles += 4;
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_immediate) {
+						// memory immediate (EA)
+						cycles += 17 + get_ea_cycles(a);
+					} else if (a.type == operand_register && a.reg.index == 0 && b.type == operand_immediate) {
+						// accumulator immediate
+						cycles += 4;
+					}
+					// TODO: log can't get cycles?
+					break;
+				}
+			case op_cmp:
+				{
+					struct operand a = instr.operands[0];
+					struct operand b = instr.operands[1];
+					if (a.type == operand_register && b.type == operand_register) {
+						// register register
+						cycles += 3;
+					} else if (a.type == operand_register && (b.type == operand_memory || b.type == operand_direct_address)) {
+						// register memory (EA)
+						cycles += 9 + get_ea_cycles(b);
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_register) {
+						// memory register (EA)
+						cycles += 9 + get_ea_cycles(a);
+					} else if (a.type == operand_register && b.type == operand_immediate) {
+						// register immediate
+						cycles += 4;
+					} else if ((a.type == operand_memory || a.type == operand_direct_address) && b.type == operand_immediate) {
+						// memory immediate (EA)
+						cycles += 10 + get_ea_cycles(a);
+					} else if (a.type == operand_register && a.reg.index == 0 && b.type == operand_immediate) {
+						// accumulator immediate
+						cycles += 4;
+					}
+					// TODO: log can't get cycles?
+					break;
+				}
+			case op_je:
+			case op_jl:
+			case op_jle:
+			case op_jb:
+			case op_jbe:
+			case op_jp:
+			case op_jo:
+			case op_js:
+			case op_jne:
+			case op_jnl:
+			case op_jnle:
+			case op_jnb:
+			case op_jnbe:
+			case op_jnp:
+			case op_jno:
+			case op_jns:
+				if (jump_taken) {
+					cycles += 4;
+				} else {
+					cycles += 16;
+				}
+				break;
+			case op_loop:
+				if (jump_taken) {
+					cycles += 5;
+				} else {
+					cycles += 17;
+				}
+				break;
+			case op_loopnz:
+				if (jump_taken) {
+					cycles += 5;
+				} else {
+					cycles += 19;
+				}
+				break;
+			case op_loopz:
+			case op_jcxz:
+				if (jump_taken) {
+					cycles += 6;
+				} else {
+					cycles += 18;
+				}
+				break;
+			case op_count:
+				break;
+		}
+		//fprintf(stderr, "Cycles: %d\n", cycles);
 	}
 
 	fprintf(stderr, "\nFinal Registers:\n");
@@ -986,6 +1159,7 @@ void execute() {
 	//fprintf(stderr, " flags: 0x%04X %d\n", cpu_state.flags, cpu_state.flags);
 	fprintf(stderr, "\n    ip: 0x%04X\n", cpu_state.ip);
 	fprintf(stderr, "  flags: S=%d Z=%d\n", (cpu_state.flags & FLAGS_S) > 0, (cpu_state.flags & FLAGS_Z) > 0);
+	fprintf(stderr, "\n  total cycles: %d\n", cycles);
 
 }
 
