@@ -26,6 +26,10 @@ enum Mode {
   ModeCluster,
 };
 
+#define printf_tee(fp, ...) \
+  fprintf(fp, __VA_ARGS__); \
+  fprintf(stdout, __VA_ARGS__); \
+
 #define rand_uniform() ((f64)rand() / RAND_MAX)
 
 #define EARTH_RADIUS_KM 6372.8
@@ -61,7 +65,7 @@ f64 writeUniformPairs(FILE *fp, u64 pairs) {
     f64 y1 = (180.0*rand_uniform())-90;
     sum += haversine(x0, y0, x1, y1);
 
-    fprintf(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
+    printf_tee(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
         x0, y0, x1, y1, sep);
   }
 
@@ -70,13 +74,13 @@ f64 writeUniformPairs(FILE *fp, u64 pairs) {
 
 f64 writeClusterPairs(FILE *fp, u64 pairs) {
   // Define 2 random squares on the globe and pull 1 point from each
-  f64 a_x0 = (360.0*rand_uniform())-180;
-  f64 a_y0 = (180.0*rand_uniform())-90;
   f64 a_size = 30.0*rand_uniform();
+  f64 a_x0 = ((360.0-a_size)*rand_uniform())-180;
+  f64 a_y0 = ((180.0-a_size)*rand_uniform())-90;
 
-  f64 b_x0 = (360.0*rand_uniform())-180;
-  f64 b_y0 = (180.0*rand_uniform())-90;
   f64 b_size = 30.0*rand_uniform();
+  f64 b_x0 = ((360.0-b_size)*rand_uniform())-180;
+  f64 b_y0 = ((180.0-b_size)*rand_uniform())-90;
 
   u64 i;
   char sep = ',';
@@ -94,7 +98,7 @@ f64 writeClusterPairs(FILE *fp, u64 pairs) {
     f64 y1 = b_y0 + (b_size*rand_uniform());
     sum += haversine(x0, y0, x1, y1);
 
-    fprintf(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
+    printf_tee(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
         x0, y0, x1, y1, sep);
   }
 
@@ -128,7 +132,7 @@ int main(int argc, char *argv[]) {
   snprintf(output_name_buf, OUTPUT_NAME_BUF_SIZE, "haversine_%d_%u_%llu.json", mode, seed, pairs);
 
   FILE *fp = fopen(output_name_buf, "w");
-  fprintf(fp, "{\"pairs\": [");
+  printf_tee(fp, "{\"pairs\": [");
 
   f64 average;
   switch (mode) {
@@ -140,7 +144,7 @@ int main(int argc, char *argv[]) {
       break;
   }
 
-  fprintf(fp, "], \"expected\": %f}", average);
+  printf_tee(fp, "], \"expected\": %f}", average);
   fclose(fp);
   return 0;
 }
