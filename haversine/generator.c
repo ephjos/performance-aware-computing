@@ -28,7 +28,8 @@ enum Mode {
 
 #define printf_tee(fp, ...) \
   fprintf(fp, __VA_ARGS__); \
-  fprintf(stdout, __VA_ARGS__); \
+
+  // fprintf(stdout, __VA_ARGS__); 
 
 #define rand_uniform() ((f64)rand() / RAND_MAX)
 

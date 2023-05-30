@@ -8,7 +8,7 @@ RELEASE_ARGS = -O3 -ffast-math
 LIBS = -lm
 
 .PHONY: all
-all: generator_debug generator_release
+all: generator_debug generator_release haversine_debug haversine_release
 
 %_debug: %.c
 	$(CC) $(DEBUG_ARGS) $(LIBS) -o $@ $<
