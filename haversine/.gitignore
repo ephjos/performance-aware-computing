@@ -1,3 +1,4 @@
 *.json
 *_debug
 *_release
+*.dSYM

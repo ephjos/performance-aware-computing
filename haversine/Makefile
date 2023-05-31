@@ -15,5 +15,5 @@ all: generator_debug generator_release haversine_debug haversine_release
 
 %_release: %.c
 	$(CC) $(RELEASE_ARGS) $(LIBS) -o $@ $<
-	strip --strip-all $@
+	strip $@
 
