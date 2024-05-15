@@ -1,26 +1,35 @@
-# include <assert.h>
-# include <ctype.h>
-# include <inttypes.h>
-# include <math.h>
-# include <stdio.h>
-# include <stdlib.h>
-# include <string.h>
-# include <time.h>
+#include <assert.h>
+#include <ctype.h>
+#include <inttypes.h>
+#include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
-typedef char unsigned u8;
-typedef short unsigned u16;
-typedef int unsigned u32;
-typedef long long unsigned u64;
+/*******************************************************************************
+ * Debug helpers
+ */
+#ifndef DEBUG
+#define DEBUG 0
+#endif
 
-typedef char s8;
-typedef short s16;
-typedef int s32;
-typedef long long s64;
+void __log_line(const char *fmt, ...) {
+  char buf[1024] = {0};
+  strcat(buf, "[DEBUG] ");
+  strcat(buf, fmt);
+  strcat(buf, "\n");
 
-typedef float f32;
-typedef double f64;
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, buf, args);
+  va_end(args);
+}
 
-typedef s32 b32;
+#define LOG(x) do { if (DEBUG) __log_line x; } while (0)
+
+//******************************************************************************
 
 enum token_type {
   TOKEN_END,
@@ -42,36 +51,34 @@ struct token {
   enum token_type type;
   union {
     char *ident;
-    f64 number;
+    double number;
     char unknown;
-  };
+  } value;
 }; 
 
-struct pair {
-  f64 x0;
-  f64 x1;
-  f64 y0;
-  f64 y1;
-};
+typedef double pair[4];
 
 struct json_input {
-  struct pair *pairs;
-  u32 pairs_len;
-  f64 expected;
+  pair *pairs;
+  uint32_t pairs_len;
+  double expected;
 };
+
+// Convert [x0, x1, y0, y1] to [0, 1, 2, 3]
+#define ident2index(s) (s[1]+(s[0]<<1)-288)
 
 #define EARTH_RADIUS_KM 6372.8
 #define square(x) ((x)*(x))
 #define deg2rad(d) (0.01745329251994329577*(d))
 
-static inline f64 haversine(f64 x0, f64 y0, f64 x1, f64 y1) {
-  f64 dy = deg2rad(y1-y0);
-  f64 dx = deg2rad(x1-x0);
-  f64 ry0 = deg2rad(y0);
-  f64 ry1 = deg2rad(y1);
+static inline double haversine(double x0, double y0, double x1, double y1) {
+  double dy = deg2rad(y1-y0);
+  double dx = deg2rad(x1-x0);
+  double ry0 = deg2rad(y0);
+  double ry1 = deg2rad(y1);
 
-  f64 a = square(sin(dy/2.0)) + cos(ry0)*cos(ry1)*square(sin(dx/2.0));
-  f64 c = 2.0*asin(sqrt(a));
+  double a = square(sin(dy/2.0)) + cos(ry0)*cos(ry1)*square(sin(dx/2.0));
+  double c = 2.0*asin(sqrt(a));
 
   return EARTH_RADIUS_KM * c;
 }
@@ -83,8 +90,8 @@ struct token *lex(char *filename) {
     exit(1);
   }
 
-  u32 tokens_cap = 1024;
-  u32 tokens_len = 0;
+  uint32_t tokens_cap = 1024;
+  uint32_t tokens_len = 0;
   struct token *tokens = malloc(sizeof(struct token) * tokens_cap);
 
   char c;
@@ -129,8 +136,8 @@ struct token *lex(char *filename) {
       default:
         {
           if (isdigit(c) || c == '-') {
-            u32 buf_i = 0;
-            char *buf = calloc(sizeof(char), 128);
+            uint32_t buf_i = 0;
+            char buf[256] = {0};
             buf[buf_i++] = c;
             while (isdigit((c = (char)fgetc(fp))) || c == '.') {
               buf[buf_i++] = c;
@@ -138,25 +145,25 @@ struct token *lex(char *filename) {
             fseek(fp, -1, SEEK_CUR);
             tokens[tokens_len++] = (struct token) {
               .type = TOKEN_NUMBER,
-              .number = atof(buf),
+              .value = { .number = atof(buf) },
             };
-            free(buf);
           } else if (isalnum(c)) {
-            u32 buf_i = 0;
+            uint32_t buf_i = 0;
             char *buf = calloc(sizeof(char), 128);
             buf[buf_i++] = c;
             while (isalnum((c = (char)fgetc(fp)))) {
               buf[buf_i++] = c;
             }
             fseek(fp, -1, SEEK_CUR);
+            buf = realloc(buf, strlen(buf)+1);
             tokens[tokens_len++] = (struct token) {
               .type = TOKEN_IDENT,
-              .ident = buf,
+              .value = { .ident = buf },
             };
           } else if (!isspace(c)) {
             tokens[tokens_len++] = (struct token) {
               .type = TOKEN_UNKNOWN,
-              .unknown = c,
+              .value = { .unknown = c },
             };
             break;
           }
@@ -175,22 +182,22 @@ struct token *lex(char *filename) {
   };
 
   fclose(fp);
+  tokens = realloc(tokens, sizeof(struct token) * tokens_len);
   return tokens;
 }
 
 struct json_input parse(struct token *tokens) {
-  u32 pairs_cap = 1024;
+  uint32_t pairs_cap = 1024;
   struct json_input input = {
-    .pairs = malloc(sizeof(struct pair) * pairs_cap),
+    .pairs = malloc(sizeof(pair) * pairs_cap),
     .pairs_len = 0,
     .expected = 0,
   };
   
-#define STACK_SIZE 1024
-  u32 stack[STACK_SIZE] = {0};
-  u32 sp = 0;
+  uint32_t stack[1024] = {0};
+  uint32_t sp = 0;
 
-  u32 i = 0;
+  uint32_t i = 0;
   struct token curr = tokens[i++];
   while (curr.type != TOKEN_END) {
     switch (curr.type) {
@@ -211,96 +218,39 @@ struct json_input parse(struct token *tokens) {
         break;
       case TOKEN_IDENT:
         if (sp == 2) {
-          if (strcmp(curr.ident, "expected") == 0) {
+          if (strcmp(curr.value.ident, "expected") == 0) {
             assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
             assert(stack[--sp] == TOKEN_DQUOTE);
             assert((curr = tokens[i++]).type == TOKEN_COLON);
             assert((curr = tokens[i++]).type == TOKEN_NUMBER);
-            input.expected = curr.number;
+            input.expected = curr.value.number;
           } else {
-            assert(strcmp(curr.ident, "pairs") == 0);
+            assert(strcmp(curr.value.ident, "pairs") == 0);
           }
         } else if (sp == 4) {
-          // TODO: get pair
-          struct pair p = {0};
+          // Find all 4 components of a pair
+          for (int j = 0; j < 4; j++) {
+            char *curr_ident = curr.value.ident;
 
-          char *curr_ident = curr.ident;
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          assert(stack[--sp] == TOKEN_DQUOTE);
-          assert((curr = tokens[i++]).type == TOKEN_COLON);
-          assert((curr = tokens[i++]).type == TOKEN_NUMBER);
-          if (strcmp(curr_ident, "x0") == 0) {
-            p.x0 = curr.number;
-          } else if (strcmp(curr_ident, "x1") == 0) {
-            p.x1 = curr.number;
-          } else if (strcmp(curr_ident, "y0") == 0) {
-            p.y0 = curr.number;
-          } else if (strcmp(curr_ident, "y1") == 0) {
-            p.y1 = curr.number;
-          }
-          assert((curr = tokens[i++]).type == TOKEN_COMMA);
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          stack[sp++] = curr.type;
-          assert((curr = tokens[i++]).type == TOKEN_IDENT);
+            assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
+            assert(stack[--sp] == TOKEN_DQUOTE);
+            assert((curr = tokens[i++]).type == TOKEN_COLON);
+            assert((curr = tokens[i++]).type == TOKEN_NUMBER);
+            input.pairs[input.pairs_len][ident2index(curr_ident)] = curr.value.number;
 
-          curr_ident = curr.ident;
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          assert(stack[--sp] == TOKEN_DQUOTE);
-          assert((curr = tokens[i++]).type == TOKEN_COLON);
-          assert((curr = tokens[i++]).type == TOKEN_NUMBER);
-          if (strcmp(curr_ident, "x0") == 0) {
-            p.x0 = curr.number;
-          } else if (strcmp(curr_ident, "x1") == 0) {
-            p.x1 = curr.number;
-          } else if (strcmp(curr_ident, "y0") == 0) {
-            p.y0 = curr.number;
-          } else if (strcmp(curr_ident, "y1") == 0) {
-            p.y1 = curr.number;
-          }
-          assert((curr = tokens[i++]).type == TOKEN_COMMA);
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          stack[sp++] = curr.type;
-          assert((curr = tokens[i++]).type == TOKEN_IDENT);
-
-          curr_ident = curr.ident;
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          assert(stack[--sp] == TOKEN_DQUOTE);
-          assert((curr = tokens[i++]).type == TOKEN_COLON);
-          assert((curr = tokens[i++]).type == TOKEN_NUMBER);
-          if (strcmp(curr_ident, "x0") == 0) {
-            p.x0 = curr.number;
-          } else if (strcmp(curr_ident, "x1") == 0) {
-            p.x1 = curr.number;
-          } else if (strcmp(curr_ident, "y0") == 0) {
-            p.y0 = curr.number;
-          } else if (strcmp(curr_ident, "y1") == 0) {
-            p.y1 = curr.number;
-          }
-          assert((curr = tokens[i++]).type == TOKEN_COMMA);
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          stack[sp++] = curr.type;
-          assert((curr = tokens[i++]).type == TOKEN_IDENT);
-
-          curr_ident = curr.ident;
-          assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
-          assert(stack[--sp] == TOKEN_DQUOTE);
-          assert((curr = tokens[i++]).type == TOKEN_COLON);
-          assert((curr = tokens[i++]).type == TOKEN_NUMBER);
-          if (strcmp(curr_ident, "x0") == 0) {
-            p.x0 = curr.number;
-          } else if (strcmp(curr_ident, "x1") == 0) {
-            p.x1 = curr.number;
-          } else if (strcmp(curr_ident, "y0") == 0) {
-            p.y0 = curr.number;
-          } else if (strcmp(curr_ident, "y1") == 0) {
-            p.y1 = curr.number;
+            if (j != 3) {
+              assert((curr = tokens[i++]).type == TOKEN_COMMA);
+              assert((curr = tokens[i++]).type == TOKEN_DQUOTE);
+              stack[sp++] = curr.type;
+              assert((curr = tokens[i++]).type == TOKEN_IDENT);
+            }
           }
 
-          input.pairs[input.pairs_len++] = p;
+          input.pairs_len++;
 
           if (input.pairs_len >= pairs_cap) {
             pairs_cap <<= 1;
-            input.pairs = realloc(input.pairs, sizeof(struct pair) * pairs_cap);
+            input.pairs = realloc(input.pairs, sizeof(pair) * pairs_cap);
           }
         }
         break;
@@ -313,39 +263,50 @@ struct json_input parse(struct token *tokens) {
 
   assert(sp == 0);
 
+  input.pairs = realloc(input.pairs, sizeof(pair) * input.pairs_len);
   return input;
 }
 
 int main(int argc, char *argv[]) {
+  LOG(("BEGIN"));
   if (argc != 2) {
     fprintf(stderr, "Usage: haversine filename\n");
     exit(1);
   }
 
+  LOG(("Lexing %s", argv[1]));
   struct token *tokens = lex(argv[1]);
+
+  LOG(("Parsing tokens"));
   struct json_input input = parse(tokens);
 
-  f64 sum = 0;
-  for (u32 i = 0; i < input.pairs_len; i++) {
-    sum += haversine(input.pairs[i].x0, input.pairs[i].y0, input.pairs[i].x1, input.pairs[i].y1);
+  LOG(("Calculating sum of haversines for %d pairs", input.pairs_len));
+  double sum = 0;
+  for (uint32_t i = 0; i < input.pairs_len; i++) {
+    sum += haversine(input.pairs[i][0], input.pairs[i][2], input.pairs[i][1], input.pairs[i][3]);
   }
 
-  f64 average = (f64)sum/input.pairs_len;
+  LOG(("Getting average from sum %f", sum));
+  double average = (double)sum/input.pairs_len;
 
   printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
-  
+
+  LOG(("Freeing input.pairs"));
   if (input.pairs != NULL) free(input.pairs);
+
+  LOG(("Freeing tokens"));
   if (tokens != NULL) {
-    u32 i = 0;
+    uint32_t i = 0;
     struct token curr = tokens[i++];
     while (curr.type != TOKEN_END) {
       if (curr.type == TOKEN_IDENT) {
-        free(curr.ident);
+        free(curr.value.ident);
       }
       curr = tokens[i++];
     }
     free(tokens);
   }
 
+  LOG(("DONE"));
   return 0;
 }

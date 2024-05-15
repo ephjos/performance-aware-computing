@@ -1,10 +1,8 @@
-# include <ctype.h>
 # include <inttypes.h>
 # include <math.h>
 # include <stdio.h>
 # include <stdlib.h>
 # include <string.h>
-# include <time.h>
 
 typedef char unsigned u8;
 typedef short unsigned u16;
@@ -25,11 +23,6 @@ enum Mode {
   ModeUniform,
   ModeCluster,
 };
-
-#define printf_tee(fp, ...) \
-  fprintf(fp, __VA_ARGS__); \
-
-  // fprintf(stdout, __VA_ARGS__); 
 
 #define rand_uniform() ((f64)rand() / RAND_MAX)
 
@@ -66,7 +59,7 @@ f64 writeUniformPairs(FILE *fp, u64 pairs) {
     f64 y1 = (180.0*rand_uniform())-90;
     sum += haversine(x0, y0, x1, y1);
 
-    printf_tee(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
+    fprintf(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
         x0, y0, x1, y1, sep);
   }
 
@@ -99,7 +92,7 @@ f64 writeClusterPairs(FILE *fp, u64 pairs) {
     f64 y1 = b_y0 + (b_size*rand_uniform());
     sum += haversine(x0, y0, x1, y1);
 
-    printf_tee(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
+    fprintf(fp, "{\"x0\": %f, \"y0\": %f, \"x1\": %f, \"y1\": %f}%c", 
         x0, y0, x1, y1, sep);
   }
 
@@ -133,7 +126,7 @@ int main(int argc, char *argv[]) {
   snprintf(output_name_buf, OUTPUT_NAME_BUF_SIZE, "haversine_%d_%u_%llu.json", mode, seed, pairs);
 
   FILE *fp = fopen(output_name_buf, "w");
-  printf_tee(fp, "{\"pairs\": [");
+  fprintf(fp, "{\"pairs\": [");
 
   f64 average;
   switch (mode) {
@@ -145,7 +138,7 @@ int main(int argc, char *argv[]) {
       break;
   }
 
-  printf_tee(fp, "], \"expected\": %f}", average);
+  fprintf(fp, "], \"expected\": %f}", average);
   fclose(fp);
   return 0;
 }
