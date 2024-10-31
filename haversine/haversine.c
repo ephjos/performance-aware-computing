@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
+#include <x86intrin.h>
 
 /*******************************************************************************
  * Debug helpers
@@ -28,6 +30,64 @@ void __log_line(const char *fmt, ...) {
 }
 
 #define LOG(x) do { if (DEBUG) __log_line x; } while (0)
+
+/******************************************************************************
+ * Timing
+ */
+struct timing_t {
+  uint64_t cpu_freq;
+
+  uint64_t start;
+
+  uint64_t startup;
+  uint64_t read;
+  uint64_t lex;
+  uint64_t parse;
+  uint64_t sum;
+  uint64_t output;
+};
+struct timing_t timing = {0};
+
+uint64_t get_os_timer_freq() {
+  return 1000000;
+}
+
+uint64_t read_os_timer() {
+  struct timeval value;
+  gettimeofday(&value, 0);
+
+  return get_os_timer_freq() * (uint64_t)value.tv_sec + (uint64_t)value.tv_usec;
+}
+
+static inline uint64_t read_cpu_timer() {
+  return __rdtsc();
+}
+
+static inline uint64_t estimate_cpu_freq(uint64_t wait_ms) {
+  uint64_t os_freq = get_os_timer_freq();
+
+  uint64_t cpu_start = read_cpu_timer();
+  uint64_t os_start = read_os_timer();
+  uint64_t os_end = 0;
+  uint64_t os_elapsed = 0;
+  uint64_t os_wait_time = os_freq * wait_ms / 1000;
+
+  while (os_elapsed < os_wait_time) {
+    os_end = read_os_timer();
+    os_elapsed = os_end - os_start;
+  }
+
+  uint64_t cpu_end = read_cpu_timer();
+  uint64_t cpu_elapsed = cpu_end - cpu_start;
+  uint64_t cpu_freq = 0;
+
+  if (os_elapsed) {
+    cpu_freq = os_freq * cpu_elapsed / os_elapsed;
+  }
+
+  return cpu_freq;
+}
+
 
 //******************************************************************************
 
@@ -83,13 +143,7 @@ static inline double haversine(double x0, double y0, double x1, double y1) {
   return EARTH_RADIUS_KM * c;
 }
 
-struct token *lex(char *filename) {
-  FILE *fp = fopen(filename, "r");
-  if (fp == NULL) {
-    fprintf(stderr, "Could not open %s for reading\n", filename);
-    exit(1);
-  }
-
+struct token *lex(FILE *fp) {
   uint32_t tokens_cap = 1024;
   uint32_t tokens_len = 0;
   struct token *tokens = malloc(sizeof(struct token) * tokens_cap);
@@ -149,7 +203,7 @@ struct token *lex(char *filename) {
             };
           } else if (isalnum(c)) {
             uint32_t buf_i = 0;
-            char *buf = calloc(sizeof(char), 128);
+            char *buf = calloc(128, sizeof(char));
             buf[buf_i++] = c;
             while (isalnum((c = (char)fgetc(fp)))) {
               buf[buf_i++] = c;
@@ -268,17 +322,33 @@ struct json_input parse(struct token *tokens) {
 }
 
 int main(int argc, char *argv[]) {
+  timing.cpu_freq = estimate_cpu_freq(100);
+  timing.start = read_cpu_timer();
+
   LOG(("BEGIN"));
   if (argc != 2) {
     fprintf(stderr, "Usage: haversine filename\n");
     exit(1);
   }
+  char *filename = argv[1];
+  timing.startup = read_cpu_timer();
 
-  LOG(("Lexing %s", argv[1]));
-  struct token *tokens = lex(argv[1]);
+
+  LOG(("Reading %s", filename));
+  FILE *input_file = fopen(filename, "r");
+  if (input_file == NULL) {
+    fprintf(stderr, "Could not open %s for reading\n", filename);
+    exit(1);
+  }
+  timing.read = read_cpu_timer();
+
+  LOG(("Lexing"));
+  struct token *tokens = lex(input_file);
+  timing.lex = read_cpu_timer();
 
   LOG(("Parsing tokens"));
   struct json_input input = parse(tokens);
+  timing.parse = read_cpu_timer();
 
   LOG(("Calculating sum of haversines for %d pairs", input.pairs_len));
   double sum = 0;
@@ -288,8 +358,30 @@ int main(int argc, char *argv[]) {
 
   LOG(("Getting average from sum %f", sum));
   double average = (double)sum/input.pairs_len;
+  timing.sum = read_cpu_timer();
 
   printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
+  timing.output = read_cpu_timer();
+
+  {
+    // Write timing info out
+    double total = (double)(timing.output - timing.start);
+    double freq = (double)timing.cpu_freq;
+    uint64_t startup = timing.startup - timing.start;
+    uint64_t read = timing.read - timing.startup;
+    uint64_t lex = timing.lex - timing.read;
+    uint64_t parse = timing.parse - timing.lex;
+    uint64_t sum = timing.sum - timing.parse;
+    uint64_t output = timing.output - timing.sum;
+
+    printf("Total time: %.4fms (CPU Freq %"PRIu64")\n", (total / freq) * 1000, timing.cpu_freq);
+    printf("  Startup:  %"PRIu64" (%.2f%%)\n", startup, ((double)startup / total) * 100);
+    printf("  Read:     %"PRIu64" (%.2f%%)\n", read, ((double)read / total) * 100);
+    printf("  Lex:      %"PRIu64" (%.2f%%)\n", lex, ((double)lex / total) * 100);
+    printf("  Parse:    %"PRIu64" (%.2f%%)\n", parse, ((double)parse / total) * 100);
+    printf("  Sum:      %"PRIu64" (%.2f%%)\n", sum, ((double)sum / total) * 100);
+    printf("  Output:   %"PRIu64" (%.2f%%)\n", output, ((double)output / total) * 100);
+  }
 
   LOG(("Freeing input.pairs"));
   if (input.pairs != NULL) free(input.pairs);

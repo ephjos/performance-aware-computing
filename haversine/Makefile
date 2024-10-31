@@ -11,6 +11,10 @@ LIBS = -lm -ldl -lmvec
 .PHONY: all
 all: generator_debug generator_release haversine_debug haversine_release
 
+.PHONY: clean
+clean:
+	rm -fv generator_debug generator_release haversine_debug haversine_release
+
 %_debug: %.c
 	$(CC) $(DEBUG_ARGS) $(LIBS) -o $@ $<
 
