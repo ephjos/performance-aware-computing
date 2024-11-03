@@ -10,6 +10,7 @@
 #include <time.h>
 #include <x86intrin.h>
 
+
 /*******************************************************************************
  * Debug helpers
  */
@@ -34,19 +35,6 @@ void __log_line(const char *fmt, ...) {
 /******************************************************************************
  * Timing
  */
-struct timing_t {
-  uint64_t cpu_freq;
-
-  uint64_t start;
-
-  uint64_t startup;
-  uint64_t read;
-  uint64_t lex;
-  uint64_t parse;
-  uint64_t sum;
-  uint64_t output;
-};
-struct timing_t timing = {0};
 
 uint64_t get_os_timer_freq() {
   return 1000000;
@@ -87,6 +75,54 @@ static inline uint64_t estimate_cpu_freq(uint64_t wait_ms) {
 
   return cpu_freq;
 }
+
+#define MAX_TIMING_CONTEXTS 4096
+
+struct timing_context {
+  uint64_t start;
+  uint64_t end;
+  const char *name;
+};
+struct timing_context timing_contexts[MAX_TIMING_CONTEXTS] = {0};
+uint32_t timing_contexts_count = 0;
+
+void __save_end_time__(struct timing_context *ctx) {
+  ctx->end = read_cpu_timer();
+  if (timing_contexts_count < MAX_TIMING_CONTEXTS) {
+    timing_contexts[timing_contexts_count++] = *ctx;
+  } else {
+    fprintf(stderr, "Maximum timing contexts (%d) reached, exiting.", MAX_TIMING_CONTEXTS);
+    exit(1);
+  }
+}
+
+void __print_timing__(uint64_t *overall_start) {
+  uint64_t overall_end = read_cpu_timer();
+  uint64_t total = overall_end - *overall_start;
+  uint64_t cpu_freq = estimate_cpu_freq(100);
+
+  printf("\nTotal time: %.4fms (CPU Freq %"PRIu64")\n", ((double)total / (double)cpu_freq) * 1000, cpu_freq);
+  for (uint32_t i = 0; i < timing_contexts_count; i++) {
+    struct timing_context ctx = timing_contexts[i];
+    uint64_t duration = ctx.end - ctx.start;
+    printf("  %16s:  %"PRIu64" (%.2f%%)\n", ctx.name, duration, ((double)duration / (double)total) * 100);
+  }
+  printf("\n");
+}
+
+#define BEGIN_TIMING() uint64_t __begin_timing__ __attribute__ ((__cleanup__(__print_timing__))) = read_cpu_timer();
+#define TIME_FUNCTION() \
+  struct timing_context __ctx__ __attribute__ ((__cleanup__(__save_end_time__))) = {\
+    .start = read_cpu_timer(),\
+    .end = 0,\
+    .name = __func__,\
+  }
+#define TIME_BLOCK(x) \
+  struct timing_context __ctx__ __attribute__ ((__cleanup__(__save_end_time__))) = {\
+    .start = read_cpu_timer(),\
+    .end = 0,\
+    .name = x,\
+  }
 
 
 //******************************************************************************
@@ -144,6 +180,8 @@ static inline double haversine(double x0, double y0, double x1, double y1) {
 }
 
 struct token *lex(FILE *fp) {
+  TIME_FUNCTION();
+
   uint32_t tokens_cap = 1024;
   uint32_t tokens_len = 0;
   struct token *tokens = malloc(sizeof(struct token) * tokens_cap);
@@ -240,7 +278,10 @@ struct token *lex(FILE *fp) {
   return tokens;
 }
 
+
 struct json_input parse(struct token *tokens) {
+  TIME_FUNCTION();
+
   uint32_t pairs_cap = 1024;
   struct json_input input = {
     .pairs = malloc(sizeof(pair) * pairs_cap),
@@ -322,83 +363,54 @@ struct json_input parse(struct token *tokens) {
 }
 
 int main(int argc, char *argv[]) {
-  timing.cpu_freq = estimate_cpu_freq(100);
-  timing.start = read_cpu_timer();
+  BEGIN_TIMING();
 
-  LOG(("BEGIN"));
   if (argc != 2) {
     fprintf(stderr, "Usage: haversine filename\n");
     exit(1);
   }
+
   char *filename = argv[1];
-  timing.startup = read_cpu_timer();
+  FILE *input_file;
+  {
+    TIME_BLOCK("read");
+    input_file = fopen(filename, "r");
+  }
 
-
-  LOG(("Reading %s", filename));
-  FILE *input_file = fopen(filename, "r");
   if (input_file == NULL) {
     fprintf(stderr, "Could not open %s for reading\n", filename);
     exit(1);
   }
-  timing.read = read_cpu_timer();
 
-  LOG(("Lexing"));
   struct token *tokens = lex(input_file);
-  timing.lex = read_cpu_timer();
-
-  LOG(("Parsing tokens"));
   struct json_input input = parse(tokens);
-  timing.parse = read_cpu_timer();
 
-  LOG(("Calculating sum of haversines for %d pairs", input.pairs_len));
   double sum = 0;
-  for (uint32_t i = 0; i < input.pairs_len; i++) {
-    sum += haversine(input.pairs[i][0], input.pairs[i][2], input.pairs[i][1], input.pairs[i][3]);
+  {
+    TIME_BLOCK("sum");
+    for (uint32_t i = 0; i < input.pairs_len; i++) {
+      sum += haversine(input.pairs[i][0], input.pairs[i][2], input.pairs[i][1], input.pairs[i][3]);
+    }
+
+    double average = (double)sum/input.pairs_len;
+    printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
   }
-
-  LOG(("Getting average from sum %f", sum));
-  double average = (double)sum/input.pairs_len;
-  timing.sum = read_cpu_timer();
-
-  printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
-  timing.output = read_cpu_timer();
 
   {
-    // Write timing info out
-    double total = (double)(timing.output - timing.start);
-    double freq = (double)timing.cpu_freq;
-    uint64_t startup = timing.startup - timing.start;
-    uint64_t read = timing.read - timing.startup;
-    uint64_t lex = timing.lex - timing.read;
-    uint64_t parse = timing.parse - timing.lex;
-    uint64_t sum = timing.sum - timing.parse;
-    uint64_t output = timing.output - timing.sum;
-
-    printf("Total time: %.4fms (CPU Freq %"PRIu64")\n", (total / freq) * 1000, timing.cpu_freq);
-    printf("  Startup:  %"PRIu64" (%.2f%%)\n", startup, ((double)startup / total) * 100);
-    printf("  Read:     %"PRIu64" (%.2f%%)\n", read, ((double)read / total) * 100);
-    printf("  Lex:      %"PRIu64" (%.2f%%)\n", lex, ((double)lex / total) * 100);
-    printf("  Parse:    %"PRIu64" (%.2f%%)\n", parse, ((double)parse / total) * 100);
-    printf("  Sum:      %"PRIu64" (%.2f%%)\n", sum, ((double)sum / total) * 100);
-    printf("  Output:   %"PRIu64" (%.2f%%)\n", output, ((double)output / total) * 100);
-  }
-
-  LOG(("Freeing input.pairs"));
-  if (input.pairs != NULL) free(input.pairs);
-
-  LOG(("Freeing tokens"));
-  if (tokens != NULL) {
-    uint32_t i = 0;
-    struct token curr = tokens[i++];
-    while (curr.type != TOKEN_END) {
-      if (curr.type == TOKEN_IDENT) {
-        free(curr.value.ident);
+    TIME_BLOCK("cleanup");
+    if (input.pairs != NULL) free(input.pairs);
+    if (tokens != NULL) {
+      uint32_t i = 0;
+      struct token curr = tokens[i++];
+      while (curr.type != TOKEN_END) {
+        if (curr.type == TOKEN_IDENT) {
+          free(curr.value.ident);
+        }
+        curr = tokens[i++];
       }
-      curr = tokens[i++];
+      free(tokens);
     }
-    free(tokens);
   }
 
-  LOG(("DONE"));
   return 0;
 }
