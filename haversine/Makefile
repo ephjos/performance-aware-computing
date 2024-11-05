@@ -15,10 +15,16 @@ all: generator_debug generator_release haversine_debug haversine_release
 clean:
 	rm -fv generator_debug generator_release haversine_debug haversine_release
 
-%_debug: %.c
+haversine_debug: haversine.c prof.h
 	$(CC) $(DEBUG_ARGS) $(LIBS) -o $@ $<
 
-%_release: %.c
+haversine_release: haversine.c prof.h
 	$(CC) $(RELEASE_ARGS) $(LIBS) -o $@ $<
 	$(STRIP) $@
 
+generator_debug: generator.c
+	$(CC) $(DEBUG_ARGS) $(LIBS) -o $@ $<
+
+generator_release: generator.c
+	$(CC) $(RELEASE_ARGS) $(LIBS) -o $@ $<
+	$(STRIP) $@

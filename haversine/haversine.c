@@ -10,6 +10,7 @@
 #include <time.h>
 #include <x86intrin.h>
 
+#include "prof.h"
 
 /*******************************************************************************
  * Debug helpers
@@ -31,101 +32,6 @@ void __log_line(const char *fmt, ...) {
 }
 
 #define LOG(x) do { if (DEBUG) __log_line x; } while (0)
-
-/******************************************************************************
- * Timing
- */
-
-uint64_t get_os_timer_freq() {
-  return 1000000;
-}
-
-uint64_t read_os_timer() {
-  struct timeval value;
-  gettimeofday(&value, 0);
-
-  return get_os_timer_freq() * (uint64_t)value.tv_sec + (uint64_t)value.tv_usec;
-}
-
-static inline uint64_t read_cpu_timer() {
-  return __rdtsc();
-}
-
-static inline uint64_t estimate_cpu_freq(uint64_t wait_ms) {
-  uint64_t os_freq = get_os_timer_freq();
-
-  uint64_t cpu_start = read_cpu_timer();
-  uint64_t os_start = read_os_timer();
-  uint64_t os_end = 0;
-  uint64_t os_elapsed = 0;
-  uint64_t os_wait_time = os_freq * wait_ms / 1000;
-
-  while (os_elapsed < os_wait_time) {
-    os_end = read_os_timer();
-    os_elapsed = os_end - os_start;
-  }
-
-  uint64_t cpu_end = read_cpu_timer();
-  uint64_t cpu_elapsed = cpu_end - cpu_start;
-  uint64_t cpu_freq = 0;
-
-  if (os_elapsed) {
-    cpu_freq = os_freq * cpu_elapsed / os_elapsed;
-  }
-
-  return cpu_freq;
-}
-
-#define MAX_TIMING_CONTEXTS 4096
-
-struct timing_context {
-  uint64_t start;
-  uint64_t end;
-  const char *name;
-};
-struct timing_context timing_contexts[MAX_TIMING_CONTEXTS] = {0};
-uint32_t timing_contexts_count = 0;
-
-void __save_end_time__(struct timing_context *ctx) {
-  ctx->end = read_cpu_timer();
-  if (timing_contexts_count < MAX_TIMING_CONTEXTS) {
-    timing_contexts[timing_contexts_count++] = *ctx;
-  } else {
-    fprintf(stderr, "Maximum timing contexts (%d) reached, exiting.", MAX_TIMING_CONTEXTS);
-    exit(1);
-  }
-}
-
-void __print_timing__(uint64_t *overall_start) {
-  uint64_t overall_end = read_cpu_timer();
-  uint64_t total = overall_end - *overall_start;
-  uint64_t cpu_freq = estimate_cpu_freq(100);
-
-  printf("\nTotal time: %.4fms (CPU Freq %"PRIu64")\n", ((double)total / (double)cpu_freq) * 1000, cpu_freq);
-  for (uint32_t i = 0; i < timing_contexts_count; i++) {
-    struct timing_context ctx = timing_contexts[i];
-    uint64_t duration = ctx.end - ctx.start;
-    printf("  %16s:  %"PRIu64" (%.2f%%)\n", ctx.name, duration, ((double)duration / (double)total) * 100);
-  }
-  printf("\n");
-}
-
-#define BEGIN_TIMING() uint64_t __begin_timing__ __attribute__ ((__cleanup__(__print_timing__))) = read_cpu_timer();
-#define TIME_FUNCTION() \
-  struct timing_context __ctx__ __attribute__ ((__cleanup__(__save_end_time__))) = {\
-    .start = read_cpu_timer(),\
-    .end = 0,\
-    .name = __func__,\
-  }
-#define TIME_BLOCK(x) \
-  struct timing_context __ctx__ __attribute__ ((__cleanup__(__save_end_time__))) = {\
-    .start = read_cpu_timer(),\
-    .end = 0,\
-    .name = x,\
-  }
-
-
-//******************************************************************************
 
 enum token_type {
   TOKEN_END,
@@ -180,7 +86,7 @@ static inline double haversine(double x0, double y0, double x1, double y1) {
 }
 
 struct token *lex(FILE *fp) {
-  TIME_FUNCTION();
+  PROF_FUNCTION();
 
   uint32_t tokens_cap = 1024;
   uint32_t tokens_len = 0;
@@ -280,7 +186,7 @@ struct token *lex(FILE *fp) {
 
 
 struct json_input parse(struct token *tokens) {
-  TIME_FUNCTION();
+  PROF_FUNCTION();
 
   uint32_t pairs_cap = 1024;
   struct json_input input = {
@@ -363,7 +269,7 @@ struct json_input parse(struct token *tokens) {
 }
 
 int main(int argc, char *argv[]) {
-  BEGIN_TIMING();
+  PROF_INIT();
 
   if (argc != 2) {
     fprintf(stderr, "Usage: haversine filename\n");
@@ -373,7 +279,7 @@ int main(int argc, char *argv[]) {
   char *filename = argv[1];
   FILE *input_file;
   {
-    TIME_BLOCK("read");
+    PROF_BLOCK("read");
     input_file = fopen(filename, "r");
   }
 
@@ -387,7 +293,7 @@ int main(int argc, char *argv[]) {
 
   double sum = 0;
   {
-    TIME_BLOCK("sum");
+    PROF_BLOCK("sum");
     for (uint32_t i = 0; i < input.pairs_len; i++) {
       sum += haversine(input.pairs[i][0], input.pairs[i][2], input.pairs[i][1], input.pairs[i][3]);
     }
@@ -397,7 +303,7 @@ int main(int argc, char *argv[]) {
   }
 
   {
-    TIME_BLOCK("cleanup");
+    PROF_BLOCK("cleanup");
     if (input.pairs != NULL) free(input.pairs);
     if (tokens != NULL) {
       uint32_t i = 0;
