@@ -9,6 +9,13 @@
 #include <time.h>
 #include <x86intrin.h>
 
+#ifndef PROF_ENABLE
+#define PROF_ENABLE 0
+#endif
+
+#define PROF_MAX_CONTEXTS 4096
+#define PROF_MAX_CONTEXT_STACK 4096
+
 uint64_t prof_get_os_timer_freq() {
   return 1000000;
 }
@@ -48,9 +55,6 @@ static inline uint64_t prof_estimate_cpu_freq(uint64_t wait_ms) {
 
   return cpu_freq;
 }
-
-#define PROF_MAX_CONTEXTS 4096
-#define PROF_MAX_CONTEXT_STACK 4096
 
 struct prof_context {
   uint64_t start;
@@ -110,17 +114,6 @@ void prof_end_time_block(uint32_t *index) {
   }
 }
 
-#define PROF_BLOCK(l) \
-  uint32_t __index__ __attribute__((cleanup(prof_end_time_block))) = __COUNTER__ + 1; \
-  prof_contexts[__index__].stack_count++; \
-  prof_context_stack.items[++prof_context_stack.sp] = (struct prof_context){\
-    .index = __index__,\
-    .start = prof_read_cpu_timer(),\
-    .label = l,\
-  }
-
-#define PROF_FUNCTION() PROF_BLOCK(__func__)
-
 void prof_end_timing(uint64_t *start) {
   uint64_t end = prof_read_cpu_timer();
   uint64_t duration = end - *start;
@@ -153,7 +146,32 @@ void prof_end_timing(uint64_t *start) {
 
 }
 
+#if PROF_ENABLE
+
+#define PROF_BLOCK(l) \
+  uint32_t __index__ __attribute__((cleanup(prof_end_time_block))) = __COUNTER__ + 1; \
+  prof_contexts[__index__].stack_count++; \
+  prof_context_stack.items[++prof_context_stack.sp] = (struct prof_context){\
+    .index = __index__,\
+    .start = prof_read_cpu_timer(),\
+    .label = l,\
+  }
+
+#define PROF_FUNCTION() PROF_BLOCK(__func__)
+
 #define PROF_INIT() \
-  uint64_t __start__ __attribute__((cleanup(prof_end_timing))) = prof_read_cpu_timer();
+  uint64_t __start__ __attribute__((cleanup(prof_end_timing))) = prof_read_cpu_timer()
+
+#define PROF_CLEANUP() \
+  _Static_assert(__COUNTER__ < PROF_MAX_CONTEXTS, "Number of profile points exceeds PROF_MAX_CONTEXTS")
+
+#else
+
+#define PROF_BLOCK(...) 
+#define PROF_FUNCTION(...) 
+#define PROF_INIT(...) 
+#define PROF_CLEANUP(...)
+
+#endif
 
 #endif

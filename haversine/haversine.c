@@ -10,6 +10,7 @@
 #include <time.h>
 #include <x86intrin.h>
 
+#define PROF_ENABLE 1
 #include "prof.h"
 
 /*******************************************************************************
@@ -320,3 +321,4 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
+
