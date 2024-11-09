@@ -9,6 +9,8 @@
 #include <time.h>
 #include <x86intrin.h>
 
+#include "shared.h"
+
 #ifndef PROF_ENABLE
 #define PROF_ENABLE 0
 #endif
@@ -16,38 +18,38 @@
 #define PROF_MAX_CONTEXTS 4096
 #define PROF_MAX_CONTEXT_STACK 4096
 
-uint64_t prof_get_os_timer_freq() {
+u64 prof_get_os_timer_freq() {
   return 1000000;
 }
 
-uint64_t prof_read_os_timer() {
+u64 prof_read_os_timer() {
   struct timeval value;
   gettimeofday(&value, 0);
 
-  return prof_get_os_timer_freq() * (uint64_t)value.tv_sec + (uint64_t)value.tv_usec;
+  return prof_get_os_timer_freq() * (u64)value.tv_sec + (u64)value.tv_usec;
 }
 
-static inline uint64_t prof_read_cpu_timer() {
+static inline u64 prof_read_cpu_timer() {
   return __rdtsc();
 }
 
-static inline uint64_t prof_estimate_cpu_freq(uint64_t wait_ms) {
-  uint64_t os_freq = prof_get_os_timer_freq();
+static inline u64 prof_estimate_cpu_freq(u64 wait_ms) {
+  u64 os_freq = prof_get_os_timer_freq();
 
-  uint64_t cpu_start = prof_read_cpu_timer();
-  uint64_t os_start = prof_read_os_timer();
-  uint64_t os_end = 0;
-  uint64_t os_elapsed = 0;
-  uint64_t os_wait_time = os_freq * wait_ms / 1000;
+  u64 cpu_start = prof_read_cpu_timer();
+  u64 os_start = prof_read_os_timer();
+  u64 os_end = 0;
+  u64 os_elapsed = 0;
+  u64 os_wait_time = os_freq * wait_ms / 1000;
 
   while (os_elapsed < os_wait_time) {
     os_end = prof_read_os_timer();
     os_elapsed = os_end - os_start;
   }
 
-  uint64_t cpu_end = prof_read_cpu_timer();
-  uint64_t cpu_elapsed = cpu_end - cpu_start;
-  uint64_t cpu_freq = 0;
+  u64 cpu_end = prof_read_cpu_timer();
+  u64 cpu_elapsed = cpu_end - cpu_start;
+  u64 cpu_freq = 0;
 
   if (os_elapsed) {
     cpu_freq = os_freq * cpu_elapsed / os_elapsed;
@@ -57,12 +59,13 @@ static inline uint64_t prof_estimate_cpu_freq(uint64_t wait_ms) {
 }
 
 struct prof_context {
-  uint64_t start;
-  uint64_t duration;
-  uint64_t child_duration;
-  uint64_t count;
-  uint32_t index;
-  uint32_t stack_count;
+  u64 start;
+  u64 duration;
+  u64 child_duration;
+  u64 count;
+  u64 bytes;
+  u32 index;
+  u32 stack_count;
   const char *label;
 };
 
@@ -70,14 +73,14 @@ struct prof_context prof_contexts[PROF_MAX_CONTEXTS] = {0};
 
 struct prof_context_stack {
   struct prof_context items[PROF_MAX_CONTEXT_STACK];
-  int32_t sp;
+  s32 sp;
 };
 struct prof_context_stack prof_context_stack = {
   .sp = -1,
 };
 
-void prof_end_time_block(uint32_t *index) {
-  uint64_t end = prof_read_cpu_timer();
+void prof_end_time_block(u32 *index) {
+  u64 end = prof_read_cpu_timer();
 
   /*
   printf("[");
@@ -91,7 +94,7 @@ void prof_end_time_block(uint32_t *index) {
   // Pop
   struct prof_context stack_ctx = prof_context_stack.items[prof_context_stack.sp--];
   struct prof_context *list_ctx = &prof_contexts[stack_ctx.index];
-  uint64_t duration = end - stack_ctx.start;
+  u64 duration = end - stack_ctx.start;
 
   // Without this, we end up counting sub-calls towards the total duration.
   uint8_t is_recursing = (--list_ctx->stack_count) != 0;
@@ -101,6 +104,7 @@ void prof_end_time_block(uint32_t *index) {
     list_ctx->index = stack_ctx.index;
     list_ctx->start = stack_ctx.start;
     list_ctx->label = stack_ctx.label;
+    list_ctx->bytes = stack_ctx.bytes;
 
     // Update
     list_ctx->duration += duration;
@@ -114,14 +118,14 @@ void prof_end_time_block(uint32_t *index) {
   }
 }
 
-void prof_end_timing(uint64_t *start) {
-  uint64_t end = prof_read_cpu_timer();
-  uint64_t duration = end - *start;
-  uint64_t cpu_freq = prof_estimate_cpu_freq(100);
+void prof_end_timing(u64 *start) {
+  u64 end = prof_read_cpu_timer();
+  u64 duration = end - *start;
+  u64 cpu_freq = prof_estimate_cpu_freq(100);
 
-  printf("\nTotal: %0.2fms (%"PRIu64" ticks at %"PRIu64"hz)\n", ((double)duration / (double)cpu_freq) * 1000, duration, cpu_freq);
+  printf("\nTotal: %0.2fms (%"PRIu64" ticks at %"PRIu64"hz)\n", ((f64)duration / (f64)cpu_freq) * 1000, duration, cpu_freq);
 
-  for (uint32_t i = 1; i < PROF_MAX_CONTEXTS; i++) {
+  for (u32 i = 1; i < PROF_MAX_CONTEXTS; i++) {
     struct prof_context ctx = prof_contexts[i];
     if (ctx.start == 0) {
       break;
@@ -129,48 +133,76 @@ void prof_end_timing(uint64_t *start) {
 
     printf("  %12s: %6.2f%% (%0.2fms %"PRIu64")",
         ctx.label, 
-        ((double)(ctx.duration - ctx.child_duration)/ (double)duration) * 100,
-        ((double)(ctx.duration - ctx.child_duration)/ (double)cpu_freq) * 1000,
+        ((f64)(ctx.duration - ctx.child_duration)/ (f64)duration) * 100,
+        ((f64)(ctx.duration - ctx.child_duration)/ (f64)cpu_freq) * 1000,
         ctx.duration
-      );
+        );
 
     if (ctx.child_duration > 0) {
-    printf(" { %0.2f%% (%0.2fms %"PRIu64") }",
-        ((double)(ctx.child_duration)/ (double)duration) * 100,
-        ((double)(ctx.child_duration)/ (double)cpu_freq) * 1000,
-        ctx.child_duration
-      );
+      printf(" { %0.2f%% (%0.2fms %"PRIu64") }",
+          ((f64)(ctx.child_duration)/ (f64)duration) * 100,
+          ((f64)(ctx.child_duration)/ (f64)cpu_freq) * 1000,
+          ctx.child_duration
+          );
     }
-    printf(" [%"PRIu64"]\n", ctx.count);
+
+    printf(" [%"PRIu64"]", ctx.count);
+
+    if (ctx.bytes > 0) {
+      /*
+           f64 Megabyte = 1024.0f*1024.0f;
+    f64 Gigabyte = Megabyte*1024.0f;
+        
+    f64 Seconds = (f64)Anchor->TSCElapsedInclusive / (f64)TimerFreq;
+    f64 BytesPerSecond = (f64)Anchor->ProcessedByteCount / Seconds;
+    f64 Megabytes = (f64)Anchor->ProcessedByteCount / (f64)Megabyte;
+    f64 GigabytesPerSecond = BytesPerSecond / Gigabyte;
+       
+    printf("  %.3fmb at %.2fgb/s", Megabytes, GigabytesPerSecond);
+    */
+      f64 MB = 1024.0f*1024.0f;
+      f64 GB = MB*(f64)1024.0f;
+
+      f64 seconds = (f64)ctx.duration / (f64)cpu_freq;
+      f64 bytes_per_second = (f64)ctx.bytes / seconds;
+      f64 mb = (f64)ctx.bytes / MB;
+      f64 gbs = bytes_per_second / GB;
+
+      printf(" | %.3fmb at %.2fgb/s", mb, gbs);
+    }
+
+    printf("\n");
   }
 
 }
 
+#define PROF_INIT() \
+  u64 __start__ __attribute__((cleanup(prof_end_timing))) = prof_read_cpu_timer()
+
+#define PROF_CLEANUP() \
+  _Static_assert(__COUNTER__ < PROF_MAX_CONTEXTS, "Number of profile points exceeds PROF_MAX_CONTEXTS")
+
 #if PROF_ENABLE
 
-#define PROF_BLOCK(l) \
-  uint32_t __index__ __attribute__((cleanup(prof_end_time_block))) = __COUNTER__ + 1; \
+#define PROF_BANDWIDTH(l,b) \
+  u32 __index__ __attribute__((cleanup(prof_end_time_block))) = __COUNTER__ + 1; \
   prof_contexts[__index__].stack_count++; \
   prof_context_stack.items[++prof_context_stack.sp] = (struct prof_context){\
     .index = __index__,\
     .start = prof_read_cpu_timer(),\
     .label = l,\
+    .bytes = b,\
   }
+
+#define PROF_BLOCK(l) PROF_BANDWIDTH(l, 0)
 
 #define PROF_FUNCTION() PROF_BLOCK(__func__)
 
-#define PROF_INIT() \
-  uint64_t __start__ __attribute__((cleanup(prof_end_timing))) = prof_read_cpu_timer()
-
-#define PROF_CLEANUP() \
-  _Static_assert(__COUNTER__ < PROF_MAX_CONTEXTS, "Number of profile points exceeds PROF_MAX_CONTEXTS")
-
 #else
 
+#define PROF_BANDWIDTH(...) 
 #define PROF_BLOCK(...) 
 #define PROF_FUNCTION(...) 
-#define PROF_INIT(...) 
-#define PROF_CLEANUP(...)
 
 #endif
 

@@ -6,9 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <x86intrin.h>
+
+#include "shared.h"
 
 #define PROF_ENABLE 1
 #include "prof.h"
@@ -54,17 +57,17 @@ struct token {
   enum token_type type;
   union {
     char *ident;
-    double number;
+    f64 number;
     char unknown;
   } value;
 }; 
 
-typedef double pair[4];
+typedef f64 pair[4];
 
 struct json_input {
   pair *pairs;
-  uint32_t pairs_len;
-  double expected;
+  u32 pairs_len;
+  f64 expected;
 };
 
 // Convert [x0, x1, y0, y1] to [0, 1, 2, 3]
@@ -74,28 +77,61 @@ struct json_input {
 #define square(x) ((x)*(x))
 #define deg2rad(d) (0.01745329251994329577*(d))
 
-static inline double haversine(double x0, double y0, double x1, double y1) {
-  double dy = deg2rad(y1-y0);
-  double dx = deg2rad(x1-x0);
-  double ry0 = deg2rad(y0);
-  double ry1 = deg2rad(y1);
+static inline f64 haversine(f64 x0, f64 y0, f64 x1, f64 y1) {
+  f64 dy = deg2rad(y1-y0);
+  f64 dx = deg2rad(x1-x0);
+  f64 ry0 = deg2rad(y0);
+  f64 ry1 = deg2rad(y1);
 
-  double a = square(sin(dy/2.0)) + cos(ry0)*cos(ry1)*square(sin(dx/2.0));
-  double c = 2.0*asin(sqrt(a));
+  f64 a = square(sin(dy/2.0)) + cos(ry0)*cos(ry1)*square(sin(dx/2.0));
+  f64 c = 2.0*asin(sqrt(a));
 
   return EARTH_RADIUS_KM * c;
 }
 
-struct token *lex(FILE *fp) {
-  PROF_FUNCTION();
+char *read_file(char *filename, u64 *size) {
+  FILE *input_file = fopen(filename, "rb");
 
-  uint32_t tokens_cap = 1024;
-  uint32_t tokens_len = 0;
+  if (input_file == NULL) {
+    fprintf(stderr, "Could not open %s for reading\n", filename);
+    exit(1);
+  }
+
+  struct stat stats;
+
+  stat(filename, &stats);
+  *size = stats.st_size;
+  char *bytes = malloc(*size);
+
+  if (bytes == NULL) {
+    fprintf(stderr, "Could not alloc %"PRIu64" bytes for reading %s\n", *size, filename);
+    fclose(input_file);
+    exit(1);
+  }
+
+  {
+    PROF_BANDWIDTH("read", *size);
+    if(fread(bytes, *size, 1, input_file) != 1) {
+      fprintf(stderr, "Unable to read %s\n", filename);
+      free(bytes);
+      exit(1);
+    }
+  }
+
+  fclose(input_file);
+  return bytes;
+}
+
+struct token *lex(char *bytes, u64 size, u64 *num_tokens) {
+  PROF_BANDWIDTH(__func__, size);
+
+  u32 tokens_cap = 1024;
+  u32 tokens_len = 0;
   struct token *tokens = malloc(sizeof(struct token) * tokens_cap);
 
-  char c;
-
-  while((c = (char)fgetc(fp)) != EOF) {
+  u64 i = 0;
+  for (; i < size; i++) {
+    char c = bytes[i];
     switch (c) {
       case '{':
         tokens[tokens_len++] = (struct token) {
@@ -135,25 +171,25 @@ struct token *lex(FILE *fp) {
       default:
         {
           if (isdigit(c) || c == '-') {
-            uint32_t buf_i = 0;
+            u32 buf_i = 0;
             char buf[256] = {0};
             buf[buf_i++] = c;
-            while (isdigit((c = (char)fgetc(fp))) || c == '.') {
+            while (isdigit((c = bytes[++i])) || c == '.') {
               buf[buf_i++] = c;
             }
-            fseek(fp, -1, SEEK_CUR);
+            i--;
             tokens[tokens_len++] = (struct token) {
               .type = TOKEN_NUMBER,
               .value = { .number = atof(buf) },
             };
           } else if (isalnum(c)) {
-            uint32_t buf_i = 0;
+            u32 buf_i = 0;
             char *buf = calloc(128, sizeof(char));
             buf[buf_i++] = c;
-            while (isalnum((c = (char)fgetc(fp)))) {
+            while (isalnum((c = bytes[++i]))) {
               buf[buf_i++] = c;
             }
-            fseek(fp, -1, SEEK_CUR);
+            i--;
             buf = realloc(buf, strlen(buf)+1);
             tokens[tokens_len++] = (struct token) {
               .type = TOKEN_IDENT,
@@ -180,26 +216,27 @@ struct token *lex(FILE *fp) {
     .type = TOKEN_END,
   };
 
-  fclose(fp);
+  *num_tokens = tokens_len;
+
   tokens = realloc(tokens, sizeof(struct token) * tokens_len);
   return tokens;
 }
 
 
-struct json_input parse(struct token *tokens) {
-  PROF_FUNCTION();
+struct json_input parse(struct token *tokens, u64 num_tokens) {
+  PROF_BANDWIDTH(__func__, num_tokens * sizeof(struct token));
 
-  uint32_t pairs_cap = 1024;
+  u32 pairs_cap = 1024;
   struct json_input input = {
     .pairs = malloc(sizeof(pair) * pairs_cap),
     .pairs_len = 0,
     .expected = 0,
   };
   
-  uint32_t stack[1024] = {0};
-  uint32_t sp = 0;
+  u32 stack[1024] = {0};
+  u32 sp = 0;
 
-  uint32_t i = 0;
+  u32 i = 0;
   struct token curr = tokens[i++];
   while (curr.type != TOKEN_END) {
     switch (curr.type) {
@@ -269,6 +306,16 @@ struct json_input parse(struct token *tokens) {
   return input;
 }
 
+f64 sum_pairs(struct json_input *input) {
+  PROF_BANDWIDTH("sum", input->pairs_len * sizeof(pair));
+
+  f64 sum = 0;
+  for (u32 i = 0; i < input->pairs_len; i++) {
+    sum += haversine(input->pairs[i][0], input->pairs[i][2], input->pairs[i][1], input->pairs[i][3]);
+  }
+  return sum;
+}
+
 int main(int argc, char *argv[]) {
   PROF_INIT();
 
@@ -277,37 +324,23 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
-  char *filename = argv[1];
-  FILE *input_file;
-  {
-    PROF_BLOCK("read");
-    input_file = fopen(filename, "r");
-  }
+  u64 file_size = 0;
+  char *file_bytes = read_file(argv[1], &file_size);
 
-  if (input_file == NULL) {
-    fprintf(stderr, "Could not open %s for reading\n", filename);
-    exit(1);
-  }
+  u64 num_tokens = 0;
+  struct token *tokens = lex(file_bytes, file_size, &num_tokens);
+  struct json_input input = parse(tokens, num_tokens);
 
-  struct token *tokens = lex(input_file);
-  struct json_input input = parse(tokens);
-
-  double sum = 0;
-  {
-    PROF_BLOCK("sum");
-    for (uint32_t i = 0; i < input.pairs_len; i++) {
-      sum += haversine(input.pairs[i][0], input.pairs[i][2], input.pairs[i][1], input.pairs[i][3]);
-    }
-
-    double average = (double)sum/input.pairs_len;
-    printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
-  }
+  f64 sum = sum_pairs(&input);
+  f64 average = (f64)sum/input.pairs_len;
+  printf("expected = %12.6f\nactual   = %12.6f\n", input.expected, average);
 
   {
-    PROF_BLOCK("cleanup");
+    PROF_BANDWIDTH("cleanup", (file_size) + (input.pairs_len * sizeof(pair)) + (num_tokens * sizeof(struct token)));
+    if (file_bytes != NULL) free(file_bytes);
     if (input.pairs != NULL) free(input.pairs);
     if (tokens != NULL) {
-      uint32_t i = 0;
+      u32 i = 0;
       struct token curr = tokens[i++];
       while (curr.type != TOKEN_END) {
         if (curr.type == TOKEN_IDENT) {
